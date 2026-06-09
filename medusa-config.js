@@ -11,7 +11,7 @@ const publicBackendUrl =
 
 const storeCors =
   process.env.STORE_CORS ||
-  "http://localhost:3000,https://e-sim-pwa-3k6n.vercel.app"
+  "http://localhost:3000,https://jeko-e-sim.vercel.app"
 
 const adminCors =
   process.env.ADMIN_CORS ||
@@ -19,7 +19,7 @@ const adminCors =
 
 const authCors =
   process.env.AUTH_CORS ||
-  `http://localhost:3000,https://e-sim-pwa-3k6n.vercel.app,${publicBackendUrl}`
+  `http://localhost:3000,https://jeko-e-sim.vercel.app,${publicBackendUrl}`
 
 module.exports = defineConfig({
   projectConfig: {
