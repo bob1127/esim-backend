@@ -1,0 +1,8 @@
+[phases.install]
+cmds = ["NODE_ENV=development npm install --no-audit --no-fund"]
+
+[phases.build]
+cmds = []
+
+[start]
+cmd = "npm run railway:start"
