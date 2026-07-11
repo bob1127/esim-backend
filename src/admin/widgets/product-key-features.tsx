@@ -13,33 +13,58 @@ import {
 } from "@medusajs/ui";
 import { PlusMini, Trash } from "@medusajs/icons";
 
-type CarrierFeaturesMap = Record<string, string[]>;
+type CarrierFeatureEntry = {
+  bullets: string[];
+  actualExperience: string;
+};
+
+type CarrierFeaturesMap = Record<string, CarrierFeatureEntry>;
 
 const METADATA_KEY = "key_features_by_carrier";
+
+const emptyEntry = (): CarrierFeatureEntry => ({
+  bullets: [""],
+  actualExperience: "",
+});
+
+const normalizeCarrierEntry = (value: unknown): CarrierFeatureEntry => {
+  if (Array.isArray(value)) {
+    return {
+      bullets: value.map(String),
+      actualExperience: "",
+    };
+  }
+  if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    return {
+      bullets: Array.isArray(obj.bullets) ? obj.bullets.map(String) : [],
+      actualExperience: String(
+        obj.actual_experience ?? obj.actualExperience ?? "",
+      ),
+    };
+  }
+  return emptyEntry();
+};
 
 const parseCarrierFeatures = (
   metadata?: Record<string, unknown> | null,
 ): CarrierFeaturesMap => {
   const raw = metadata?.[METADATA_KEY];
   if (!raw) return {};
-  if (typeof raw === "object" && !Array.isArray(raw)) {
-    return Object.fromEntries(
-      Object.entries(raw as Record<string, unknown>).map(([k, v]) => [
-        k,
-        Array.isArray(v) ? v.map(String) : [],
-      ]),
+
+  const parseObject = (parsed: Record<string, unknown>) =>
+    Object.fromEntries(
+      Object.entries(parsed).map(([k, v]) => [k, normalizeCarrierEntry(v)]),
     );
+
+  if (typeof raw === "object" && !Array.isArray(raw)) {
+    return parseObject(raw as Record<string, unknown>);
   }
   if (typeof raw === "string") {
     try {
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        return Object.fromEntries(
-          Object.entries(parsed).map(([k, v]) => [
-            k,
-            Array.isArray(v) ? v.map(String) : [],
-          ]),
-        );
+        return parseObject(parsed);
       }
     } catch {
       /* ignore */
@@ -58,7 +83,6 @@ const isTelecomValue = (value: string) => {
 const extractTelecomCarriers = (product: Record<string, any>): string[] => {
   const set = new Set<string>();
 
-  // 優先：Product Option 標題含電信／carrier 關鍵字
   product?.options?.forEach((option: any) => {
     const title = String(option?.title ?? "").toLowerCase();
     if (
@@ -75,7 +99,6 @@ const extractTelecomCarriers = (product: Record<string, any>): string[] => {
     }
   });
 
-  // 其次：從各變體選項值推斷（排除天數、流量）
   product?.variants?.forEach((variant: any) => {
     variant?.options?.forEach((opt: any) => {
       const val = String(opt?.value ?? "").trim();
@@ -93,18 +116,30 @@ const mergeCarrierMaps = (
   const keys = new Set([...Object.keys(saved), ...carriers]);
   const merged: CarrierFeaturesMap = {};
   keys.forEach((key) => {
-    merged[key] = saved[key]?.length ? [...saved[key]] : [""];
+    const existing = saved[key];
+    merged[key] = existing?.bullets?.length
+      ? {
+          bullets: [...existing.bullets],
+          actualExperience: existing.actualExperience || "",
+        }
+      : emptyEntry();
   });
   return merged;
 };
 
-const sanitizeForSave = (map: CarrierFeaturesMap): CarrierFeaturesMap => {
-  const out: CarrierFeaturesMap = {};
-  Object.entries(map).forEach(([carrier, bullets]) => {
-    const cleaned = bullets
+const sanitizeForSave = (map: CarrierFeaturesMap): Record<string, unknown> => {
+  const out: Record<string, unknown> = {};
+  Object.entries(map).forEach(([carrier, entry]) => {
+    const bullets = entry.bullets
       .map((b) => b.replace(/^\s+|\s+$/g, ""))
       .filter(Boolean);
-    if (cleaned.length) out[carrier] = cleaned;
+    const actualExperience = entry.actualExperience.trim();
+    if (bullets.length || actualExperience) {
+      out[carrier] = {
+        bullets,
+        actual_experience: actualExperience,
+      };
+    }
   });
   return out;
 };
@@ -139,6 +174,126 @@ const previewFeatureHtml = (text: string) => {
     })
     .join("");
 };
+
+function RichTextEditor({
+  value,
+  onChange,
+  label,
+  placeholder,
+  rows = 5,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  label: string;
+  placeholder: string;
+  rows?: number;
+}) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [linkLabel, setLinkLabel] = useState("");
+  const [linkHref, setLinkHref] = useState("");
+
+  const insertAtCursor = (snippet: string) => {
+    const el = textareaRef.current;
+    if (el) {
+      const start = el.selectionStart ?? value.length;
+      const end = el.selectionEnd ?? value.length;
+      onChange(value.slice(0, start) + snippet + value.slice(end));
+      requestAnimationFrame(() => {
+        el.focus();
+        const pos = start + snippet.length;
+        el.setSelectionRange(pos, pos);
+      });
+    } else {
+      onChange(value + snippet);
+    }
+  };
+
+  const insertLink = () => {
+    const label = linkLabel.trim();
+    const href = linkHref.trim();
+    if (!label || !href) {
+      alert("請填寫連結文字與網址");
+      return;
+    }
+    insertAtCursor(`[${label}](${href})`);
+    setLinkLabel("");
+    setLinkHref("");
+  };
+
+  const previewHtml = useMemo(() => previewFeatureHtml(value), [value]);
+
+  return (
+    <div className="rounded-lg border border-ui-border-base bg-ui-bg-subtle p-3 space-y-2.5">
+      <Label className="text-ui-fg-subtle">{label}</Label>
+      <textarea
+        ref={textareaRef}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        rows={rows}
+        className="txt-compact-small w-full min-h-[120px] resize-y rounded-md border border-ui-border-base bg-ui-bg-base px-3 py-2 text-ui-fg-base shadow-borders-base outline-none focus:border-ui-border-interactive whitespace-pre-wrap"
+      />
+
+      <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-2 items-end">
+        <div>
+          <Label className="mb-1">連結文字</Label>
+          <Input
+            placeholder="例：實測影片"
+            value={linkLabel}
+            onChange={(e) => setLinkLabel(e.target.value)}
+          />
+        </div>
+        <div>
+          <Label className="mb-1">連結網址</Label>
+          <Input
+            placeholder="https:// 或 /blog/..."
+            value={linkHref}
+            onChange={(e) => setLinkHref(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                insertLink();
+              }
+            }}
+          />
+        </div>
+        <Button
+          type="button"
+          size="small"
+          variant="secondary"
+          onClick={insertLink}
+          className="shrink-0"
+        >
+          插入連結
+        </Button>
+      </div>
+
+      <div className="flex gap-2">
+        <Button
+          type="button"
+          size="small"
+          variant="transparent"
+          onClick={() => insertAtCursor("\n\n")}
+          className="text-ui-fg-subtle"
+        >
+          插入空行分段
+        </Button>
+      </div>
+
+      {previewHtml ? (
+        <div className="rounded-md border border-dashed border-ui-border-base bg-white px-3 py-2.5">
+          <Text size="xsmall" className="text-ui-fg-muted mb-1.5 block">
+            前台預覽
+          </Text>
+          <div
+            className="text-ui-fg-base text-sm leading-relaxed"
+            dangerouslySetInnerHTML={{ __html: previewHtml }}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 /** 單段重點特色：正文 + 分段 + 插入連結 + 預覽 */
 function FeatureBulletRow({
@@ -342,7 +497,7 @@ const ProductKeyFeaturesWidget = ({
       alert("此電信商已存在");
       return;
     }
-    setFeatures((prev) => ({ ...prev, [name]: [""] }));
+    setFeatures((prev) => ({ ...prev, [name]: emptyEntry() }));
     setOpenItems((prev) => [...prev, name]);
     setNewCarrier("");
     markDirty();
@@ -362,7 +517,10 @@ const ProductKeyFeaturesWidget = ({
   const addBullet = (carrier: string) => {
     setFeatures((prev) => ({
       ...prev,
-      [carrier]: [...(prev[carrier] || []), ""],
+      [carrier]: {
+        ...prev[carrier],
+        bullets: [...(prev[carrier]?.bullets || []), ""],
+      },
     }));
     markDirty();
   };
@@ -370,7 +528,10 @@ const ProductKeyFeaturesWidget = ({
   const updateBullet = (carrier: string, index: number, value: string) => {
     setFeatures((prev) => ({
       ...prev,
-      [carrier]: prev[carrier].map((b, i) => (i === index ? value : b)),
+      [carrier]: {
+        ...prev[carrier],
+        bullets: prev[carrier].bullets.map((b, i) => (i === index ? value : b)),
+      },
     }));
     markDirty();
   };
@@ -378,7 +539,21 @@ const ProductKeyFeaturesWidget = ({
   const removeBullet = (carrier: string, index: number) => {
     setFeatures((prev) => ({
       ...prev,
-      [carrier]: prev[carrier].filter((_, i) => i !== index),
+      [carrier]: {
+        ...prev[carrier],
+        bullets: prev[carrier].bullets.filter((_, i) => i !== index),
+      },
+    }));
+    markDirty();
+  };
+
+  const updateActualExperience = (carrier: string, value: string) => {
+    setFeatures((prev) => ({
+      ...prev,
+      [carrier]: {
+        ...prev[carrier],
+        actualExperience: value,
+      },
     }));
     markDirty();
   };
@@ -421,7 +596,7 @@ const ProductKeyFeaturesWidget = ({
         <div>
           <Heading level="h2">重點特色（依電信商）</Heading>
           <Text size="small" className="text-ui-fg-subtle mt-1">
-            每個商品獨立設定。電信商名稱需與此商品的變體選項一致（不同國家方案會有不同電信商）。
+            每個商品獨立設定。電信商名稱需與此商品的變體選項一致；可填寫重點特色段落與實際體驗。
           </Text>
           {variantCarriers.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mt-2">
@@ -501,33 +676,51 @@ const ProductKeyFeaturesWidget = ({
             onValueChange={setOpenItems}
           >
             {carrierKeys.map((carrier) => {
-              const bullets = features[carrier] || [];
-              const filled = bullets.filter((b) => b.replace(/\s/g, "").length)
-                .length;
+              const entry = features[carrier] || emptyEntry();
+              const bullets = entry.bullets || [];
+              const filledBullets = bullets.filter(
+                (b) => b.replace(/\s/g, "").length,
+              ).length;
+              const hasExperience = entry.actualExperience.trim().length > 0;
               const status =
-                filled > 0 ? "completed" : bullets.length ? "in-progress" : "not-started";
+                filledBullets > 0 || hasExperience
+                  ? "completed"
+                  : bullets.length
+                    ? "in-progress"
+                    : "not-started";
 
               return (
                 <ProgressAccordion.Item key={carrier} value={carrier}>
                   <ProgressAccordion.Header status={status}>
                     <div className="flex w-full items-center justify-between gap-3 pr-2">
                       <span className="font-medium">{carrier}</span>
-                      <Badge size="2xsmall">{filled} 條</Badge>
+                      <div className="flex gap-1.5">
+                        <Badge size="2xsmall">{filledBullets} 段特色</Badge>
+                        {hasExperience && (
+                          <Badge size="2xsmall" color="purple">
+                            有體驗
+                          </Badge>
+                        )}
+                      </div>
                     </div>
                   </ProgressAccordion.Header>
                   <ProgressAccordion.Content>
-                    <div className="space-y-3 pb-2">
-                      {bullets.map((bullet, index) => (
-                        <FeatureBulletRow
-                          key={`${carrier}-${index}`}
-                          index={index}
-                          value={bullet}
-                          onChange={(val) => updateBullet(carrier, index, val)}
-                          onRemove={() => removeBullet(carrier, index)}
-                        />
-                      ))}
-
-                      <div className="flex flex-wrap gap-2 pt-1">
+                    <div className="space-y-4 pb-2">
+                      <div className="space-y-3">
+                        <Label className="text-ui-fg-base font-medium">
+                          重點特色
+                        </Label>
+                        {bullets.map((bullet, index) => (
+                          <FeatureBulletRow
+                            key={`${carrier}-${index}`}
+                            index={index}
+                            value={bullet}
+                            onChange={(val) =>
+                              updateBullet(carrier, index, val)
+                            }
+                            onRemove={() => removeBullet(carrier, index)}
+                          />
+                        ))}
                         <Button
                           type="button"
                           size="small"
@@ -536,6 +729,19 @@ const ProductKeyFeaturesWidget = ({
                         >
                           <PlusMini /> 新增一段
                         </Button>
+                      </div>
+
+                      <RichTextEditor
+                        label="實際體驗"
+                        value={entry.actualExperience}
+                        onChange={(val) =>
+                          updateActualExperience(carrier, val)
+                        }
+                        placeholder="輸入此電信商方案的實際使用體驗、測速心得等… 支援分段與 [文字](網址) 連結"
+                        rows={6}
+                      />
+
+                      <div className="flex flex-wrap gap-2 pt-1">
                         <Button
                           type="button"
                           size="small"

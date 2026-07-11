@@ -43,6 +43,7 @@ module.exports = defineConfig({
     disable: !adminEnabled,
     path: "/app",
     backendUrl: publicBackendUrl,
+    maxUploadFileSize: 15 * 1024 * 1024,
   },
   modules: [
     {

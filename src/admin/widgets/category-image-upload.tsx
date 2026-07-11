@@ -110,7 +110,7 @@ const CategoryImageUploadWidget = ({
 
         <div className="flex-1 space-y-4">
           <div className="bg-gray-50 p-6 rounded-lg border border-gray-100">
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+            <label className="block text-sm font-medium text-stone-900 mb-2">
               更新圖片
             </label>
             <input
