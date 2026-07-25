@@ -20,6 +20,38 @@ const authCors =
   process.env.AUTH_CORS ||
   `http://localhost:3000,https://jeko-e-sim.vercel.app,${publicBackendUrl}`
 
+const useR2 =
+  Boolean(process.env.S3_BUCKET?.trim()) &&
+  Boolean(process.env.S3_ENDPOINT?.trim()) &&
+  Boolean(process.env.S3_FILE_URL?.trim()) &&
+  Boolean(process.env.S3_ACCESS_KEY_ID?.trim()) &&
+  Boolean(process.env.S3_SECRET_ACCESS_KEY?.trim())
+
+const fileProvider = useR2
+  ? {
+      resolve: "./src/providers/r2-s3",
+      id: "r2-s3",
+      options: {
+        file_url: process.env.S3_FILE_URL,
+        access_key_id: process.env.S3_ACCESS_KEY_ID,
+        secret_access_key: process.env.S3_SECRET_ACCESS_KEY,
+        region: process.env.S3_REGION || "auto",
+        bucket: process.env.S3_BUCKET,
+        endpoint: process.env.S3_ENDPOINT,
+        prefix: process.env.S3_PREFIX || "",
+        additional_client_config: {
+          forcePathStyle: true,
+        },
+      },
+    }
+  : {
+      resolve: "@medusajs/medusa/file-local",
+      id: "local",
+      options: {
+        backend_url: `${publicBackendUrl}/static`,
+      },
+    }
+
 module.exports = defineConfig({
   projectConfig: {
     databaseUrl: process.env.DATABASE_URL,
@@ -53,13 +85,18 @@ module.exports = defineConfig({
       key: "file",
       resolve: "@medusajs/medusa/file",
       options: {
+        providers: [fileProvider],
+      },
+    },
+    {
+      key: "payment",
+      resolve: "@medusajs/medusa/payment",
+      options: {
         providers: [
           {
-            resolve: "@medusajs/medusa/file-local",
-            id: "local",
-            options: {
-              backend_url: `${publicBackendUrl}/static`,
-            },
+            resolve: "./src/modules/newebpay",
+            id: "newebpay",
+            options: {},
           },
         ],
       },

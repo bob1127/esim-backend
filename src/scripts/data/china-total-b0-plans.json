@@ -1,0 +1,338 @@
+[
+  {
+    "sku": "China-Total1GB-3-B0",
+    "planId": "13ab03f7-5186-492f-91f1-015995963026",
+    "gb": 1,
+    "days": 3,
+    "costTwd": 23,
+    "retailTwd": 39
+  },
+  {
+    "sku": "China-Total3GB-3-B0",
+    "planId": "6823eece-0b6f-4dfc-9eed-22aac06babd6",
+    "gb": 3,
+    "days": 3,
+    "costTwd": 56,
+    "retailTwd": 89
+  },
+  {
+    "sku": "China-Total5GB-3-B0",
+    "planId": "eb5a34b9-c74e-4787-8b8b-60a3da62394d",
+    "gb": 5,
+    "days": 3,
+    "costTwd": 86,
+    "retailTwd": 129
+  },
+  {
+    "sku": "China-Total10GB-3-B0",
+    "planId": "123ca103-f1a0-479d-a861-01552f761cbc",
+    "gb": 10,
+    "days": 3,
+    "costTwd": 136,
+    "retailTwd": 199
+  },
+  {
+    "sku": "China-Total20GB-3-B0",
+    "planId": "0b02a372-12cc-4958-91bd-0bdb0c690de6",
+    "gb": 20,
+    "days": 3,
+    "costTwd": 248,
+    "retailTwd": 359
+  },
+  {
+    "sku": "China-Total30GB-3-B0",
+    "planId": "971db87d-2921-4926-8663-7d79213b9d4a",
+    "gb": 30,
+    "days": 3,
+    "costTwd": 350,
+    "retailTwd": 509
+  },
+  {
+    "sku": "China-Total50GB-3-B0",
+    "planId": "825a486d-c9d2-40a9-870c-5e562f199123",
+    "gb": 50,
+    "days": 3,
+    "costTwd": 552,
+    "retailTwd": 809
+  },
+  {
+    "sku": "China-Total1GB-5-B0",
+    "planId": "10577443-f30d-43e5-903b-0044a2279043",
+    "gb": 1,
+    "days": 5,
+    "costTwd": 27,
+    "retailTwd": 39
+  },
+  {
+    "sku": "China-Total3GB-5-B0",
+    "planId": "dfbb2214-bc56-40e3-a6a6-40ce00b6009b",
+    "gb": 3,
+    "days": 5,
+    "costTwd": 59,
+    "retailTwd": 89
+  },
+  {
+    "sku": "China-Total5GB-5-B0",
+    "planId": "2ef90350-7bd0-45d8-bfa6-3e74981ea027",
+    "gb": 5,
+    "days": 5,
+    "costTwd": 88,
+    "retailTwd": 129
+  },
+  {
+    "sku": "China-Total10GB-5-B0",
+    "planId": "f59846e9-6350-4b18-bd8e-7143dd082f84",
+    "gb": 10,
+    "days": 5,
+    "costTwd": 138,
+    "retailTwd": 209
+  },
+  {
+    "sku": "China-Total20GB-5-B0",
+    "planId": "11225b5e-9808-4fba-913c-6e86b13931fe",
+    "gb": 20,
+    "days": 5,
+    "costTwd": 271,
+    "retailTwd": 399
+  },
+  {
+    "sku": "China-Total30GB-5-B0",
+    "planId": "bc8f64c4-c157-4e8c-829c-d8a30c71c813",
+    "gb": 30,
+    "days": 5,
+    "costTwd": 372,
+    "retailTwd": 539
+  },
+  {
+    "sku": "China-Total50GB-5-B0",
+    "planId": "9f2f4b25-8c6b-48eb-9a29-277e1ee949e3",
+    "gb": 50,
+    "days": 5,
+    "costTwd": 575,
+    "retailTwd": 839
+  },
+  {
+    "sku": "China-Total1GB-7-B0",
+    "planId": "5767d80b-a724-47f3-b670-a54922f65f24",
+    "gb": 1,
+    "days": 7,
+    "costTwd": 32,
+    "retailTwd": 49
+  },
+  {
+    "sku": "China-Total3GB-7-B0",
+    "planId": "7631951d-f669-4591-b2b2-5559ebe020cc",
+    "gb": 3,
+    "days": 7,
+    "costTwd": 61,
+    "retailTwd": 89
+  },
+  {
+    "sku": "China-Total5GB-7-B0",
+    "planId": "87e13e62-0e2a-4b7d-b164-2e03446f4903",
+    "gb": 5,
+    "days": 7,
+    "costTwd": 90,
+    "retailTwd": 139
+  },
+  {
+    "sku": "China-Total10GB-7-B0",
+    "planId": "4e323ed1-48a7-4dfd-89b9-639f8b662b8b",
+    "gb": 10,
+    "days": 7,
+    "costTwd": 147,
+    "retailTwd": 219
+  },
+  {
+    "sku": "China-Total20GB-7-B0",
+    "planId": "ad59a07d-0725-4837-aaf3-b315eaf161ab",
+    "gb": 20,
+    "days": 7,
+    "costTwd": 293,
+    "retailTwd": 429
+  },
+  {
+    "sku": "China-Total30GB-7-B0",
+    "planId": "1bc34966-968d-481d-a71a-bf4704473836",
+    "gb": 30,
+    "days": 7,
+    "costTwd": 395,
+    "retailTwd": 579
+  },
+  {
+    "sku": "China-Total50GB-7-B0",
+    "planId": "7ecc8dcf-94d7-41be-9aa3-bab60048adb2",
+    "gb": 50,
+    "days": 7,
+    "costTwd": 620,
+    "retailTwd": 899
+  },
+  {
+    "sku": "China-Total1GB-10-B0",
+    "planId": "83147640-b2bd-43c8-a371-2a2fb1019599",
+    "gb": 1,
+    "days": 10,
+    "costTwd": 37,
+    "retailTwd": 59
+  },
+  {
+    "sku": "China-Total3GB-10-B0",
+    "planId": "a0fb57a6-e3e8-405a-a82c-7a89494b47ad",
+    "gb": 3,
+    "days": 10,
+    "costTwd": 63,
+    "retailTwd": 99
+  },
+  {
+    "sku": "China-Total5GB-10-B0",
+    "planId": "d2c20025-df6e-4d2d-accd-5867e45cb00c",
+    "gb": 5,
+    "days": 10,
+    "costTwd": 93,
+    "retailTwd": 139
+  },
+  {
+    "sku": "China-Total10GB-10-B0",
+    "planId": "9423939c-56b5-4c44-87a1-dc24cfac28ff",
+    "gb": 10,
+    "days": 10,
+    "costTwd": 156,
+    "retailTwd": 229
+  },
+  {
+    "sku": "China-Total20GB-10-B0",
+    "planId": "3e4c4668-7fbd-4a50-ac59-769eac58ef26",
+    "gb": 20,
+    "days": 10,
+    "costTwd": 305,
+    "retailTwd": 449
+  },
+  {
+    "sku": "China-Total30GB-10-B0",
+    "planId": "15263d83-3702-46b8-940e-be4abdb6735d",
+    "gb": 30,
+    "days": 10,
+    "costTwd": 417,
+    "retailTwd": 609
+  },
+  {
+    "sku": "China-Total50GB-10-B0",
+    "planId": "2ef6d01a-addf-401d-8ff6-2b9175d03417",
+    "gb": 50,
+    "days": 10,
+    "costTwd": 643,
+    "retailTwd": 939
+  },
+  {
+    "sku": "China-Total1GB-15-B0",
+    "planId": "ba1dbcdb-b851-4b45-a728-4a6d633f2ad2",
+    "gb": 1,
+    "days": 15,
+    "costTwd": 41,
+    "retailTwd": 59
+  },
+  {
+    "sku": "China-Total3GB-15-B0",
+    "planId": "52cb650f-0baf-4294-b3e3-dbaccf94ea9f",
+    "gb": 3,
+    "days": 15,
+    "costTwd": 66,
+    "retailTwd": 99
+  },
+  {
+    "sku": "China-Total5GB-15-B0",
+    "planId": "b2cd0447-506d-43a3-a00b-b6b6efd91e0b",
+    "gb": 5,
+    "days": 15,
+    "costTwd": 95,
+    "retailTwd": 139
+  },
+  {
+    "sku": "China-Total10GB-15-B0",
+    "planId": "636def24-0e3a-4911-b082-6ccf39b4e717",
+    "gb": 10,
+    "days": 15,
+    "costTwd": 165,
+    "retailTwd": 239
+  },
+  {
+    "sku": "China-Total20GB-15-B0",
+    "planId": "11667335-af67-44e4-bddd-51b21db88e23",
+    "gb": 20,
+    "days": 15,
+    "costTwd": 316,
+    "retailTwd": 459
+  },
+  {
+    "sku": "China-Total30GB-15-B0",
+    "planId": "8e4e39b9-d89a-4213-8ca1-9e0dc652428d",
+    "gb": 30,
+    "days": 15,
+    "costTwd": 440,
+    "retailTwd": 639
+  },
+  {
+    "sku": "China-Total50GB-15-B0",
+    "planId": "6334d8ba-482e-4697-a93f-7defa4450496",
+    "gb": 50,
+    "days": 15,
+    "costTwd": 676,
+    "retailTwd": 989
+  },
+  {
+    "sku": "China-Total1GB-30-B0",
+    "planId": "46d50153-4756-40b6-ac15-e42e992bfad2",
+    "gb": 1,
+    "days": 30,
+    "costTwd": 45,
+    "retailTwd": 69
+  },
+  {
+    "sku": "China-Total3GB-30-B0",
+    "planId": "987cdf11-5076-44e9-8eed-42961e57b4c8",
+    "gb": 3,
+    "days": 30,
+    "costTwd": 68,
+    "retailTwd": 99
+  },
+  {
+    "sku": "China-Total5GB-30-B0",
+    "planId": "5ecf7fba-f9ad-47df-ab5f-bdc32ca8f7c9",
+    "gb": 5,
+    "days": 30,
+    "costTwd": 97,
+    "retailTwd": 149
+  },
+  {
+    "sku": "China-Total10GB-30-B0",
+    "planId": "8a2dd497-2a36-4860-85e6-23f5f7355bd4",
+    "gb": 10,
+    "days": 30,
+    "costTwd": 174,
+    "retailTwd": 259
+  },
+  {
+    "sku": "China-Total20GB-30-B0",
+    "planId": "24343a4d-675b-41aa-b147-04266e65e1ff",
+    "gb": 20,
+    "days": 30,
+    "costTwd": 327,
+    "retailTwd": 479
+  },
+  {
+    "sku": "China-Total30GB-30-B0",
+    "planId": "0209818f-a720-467d-8f27-db4e48b47eef",
+    "gb": 30,
+    "days": 30,
+    "costTwd": 462,
+    "retailTwd": 669
+  },
+  {
+    "sku": "China-Total50GB-30-B0",
+    "planId": "50691d08-fb58-4f66-b28e-44028f71d30b",
+    "gb": 50,
+    "days": 30,
+    "costTwd": 710,
+    "retailTwd": 1029
+  }
+]
