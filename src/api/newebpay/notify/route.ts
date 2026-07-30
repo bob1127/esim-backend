@@ -54,6 +54,8 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         "items.product_title",
         "items.variant_sku",
         "items.quantity",
+        "items.unit_price",
+        "items.subtotal",
         "items.metadata",
         "payment_collections.payment_sessions.id",
       ],
@@ -144,7 +146,24 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     ]);
 
     const hasQrcodes = !!order.metadata?.esim_qrcodes;
+    const hasInvoice = !!order.metadata?.ezpay_invoice_number;
     const fulfillBase = process.env.FULFILLMENT_INTERNAL_URL;
+    const internalHeaders = {
+      "Content-Type": "application/json",
+      "X-Fulfillment-Secret": process.env.FULFILLMENT_INTERNAL_SECRET || "",
+    };
+    const lineItems = (order.items || []).map((it: any) => ({
+      name: it.product_title || it.title,
+      sku: it.variant_sku || it.metadata?.esim_plan_id || "",
+      quantity: it.quantity,
+      // Medusa major units（twd）
+      unit_price:
+        typeof it.unit_price === "number"
+          ? it.unit_price
+          : typeof it.subtotal === "number" && it.quantity
+            ? Math.round(Number(it.subtotal) / Number(it.quantity))
+            : undefined,
+    }));
 
     if (!hasQrcodes && fulfillBase) {
       try {
@@ -152,17 +171,13 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
           `${fulfillBase.replace(/\/$/, "")}/api/internal/fulfill-order`,
           {
             method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-Fulfillment-Secret":
-                process.env.FULFILLMENT_INTERNAL_SECRET || "",
-            },
+            headers: internalHeaders,
             body: JSON.stringify({
               orderId: order.id,
               email: order.email,
-              items: (order.items || []).map((it: any) => ({
-                name: it.product_title || it.title,
-                sku: it.variant_sku || it.metadata?.esim_plan_id || "",
+              items: lineItems.map((it) => ({
+                name: it.name,
+                sku: it.sku,
                 quantity: it.quantity,
               })),
             }),
@@ -201,6 +216,80 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       console.log(`[newebpay-notify:${rid}] eSIM 已發過，略過: ${order.id}`);
     } else {
       console.warn(`[newebpay-notify:${rid}] 未設定 FULFILLMENT_INTERNAL_URL`);
+    }
+
+    /* D) 付款成功 → ezPay 電子發票（失敗不影響發貨；可重試） */
+    if (!hasInvoice && fulfillBase) {
+      try {
+        const amtRaw =
+          typeof order.total === "number"
+            ? order.total
+            : Number(result?.Amt || 0);
+        const invoiceRes = await fetch(
+          `${fulfillBase.replace(/\/$/, "")}/api/internal/issue-invoice`,
+          {
+            method: "POST",
+            headers: internalHeaders,
+            body: JSON.stringify({
+              orderId: order.id,
+              // ezPay MerchantOrderNo 上限 20；藍新用完整 ULID（≤30）
+              orderNo: merchantOrderNo.slice(0, 20),
+              email: order.email,
+              amount: amtRaw,
+              buyerName:
+                order.metadata?.buyer_name ||
+                order.shipping_address?.first_name ||
+                undefined,
+              buyerUBN: order.metadata?.buyer_ubn || undefined,
+              items: lineItems.map((it) => ({
+                name: it.name,
+                qty: it.quantity || 1,
+                price:
+                  it.unit_price != null
+                    ? it.unit_price
+                    : Math.round(amtRaw / Math.max(1, lineItems.length)),
+              })),
+            }),
+          },
+        );
+        const invoiceData = await invoiceRes.json().catch(() => ({}));
+        if (invoiceRes.ok && invoiceData?.success) {
+          if (!invoiceData.skipped && invoiceData.invoiceNumber) {
+            await orderModule.updateOrders([
+              {
+                id: order.id,
+                metadata: {
+                  ...(order.metadata || {}),
+                  ezpay_invoice_number: invoiceData.invoiceNumber,
+                  ezpay_invoice_random: invoiceData.randomNum || "",
+                  ezpay_invoice_at:
+                    invoiceData.createTime || new Date().toISOString(),
+                },
+              },
+            ]);
+            console.log(
+              `[newebpay-notify:${rid}] 發票開立: ${invoiceData.invoiceNumber}`,
+            );
+          } else {
+            console.log(
+              `[newebpay-notify:${rid}] 發票略過:`,
+              invoiceData.message || "disabled",
+            );
+          }
+        } else {
+          console.error(
+            `[newebpay-notify:${rid}] 發票失敗:`,
+            invoiceData?.message || invoiceData,
+          );
+        }
+      } catch (invErr: any) {
+        console.error(
+          `[newebpay-notify:${rid}] 發票例外:`,
+          invErr?.message || invErr,
+        );
+      }
+    } else if (hasInvoice) {
+      console.log(`[newebpay-notify:${rid}] 發票已開過，略過: ${order.id}`);
     }
 
     return res.status(200).send("OK");

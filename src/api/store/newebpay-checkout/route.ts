@@ -55,12 +55,94 @@ async function storeFetch(
   return { response, data };
 }
 
+async function sleep(ms: number) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** 409 / race 時：輪詢 cart.completed_at，再用 order module 依 email+時間找回訂單 */
+async function recoverOrderAfterComplete(
+  req: MedusaRequest,
+  backendUrl: string,
+  headers: Record<string, string>,
+  cartId: string,
+) {
+  let cartEmail: string | undefined;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const cartRes = await storeFetch(
+      backendUrl,
+      `/store/carts/${cartId}`,
+      headers,
+    );
+    const cart = cartRes.data?.cart;
+    cartEmail = cart?.email || cartEmail;
+    if (cart?.completed_at) break;
+    await sleep(300 + attempt * 150);
+  }
+
+  // 優先：query graph 以 cart_id 關聯找 order（Medusa v2 link）
+  try {
+    const query = req.scope.resolve("query") as {
+      graph: (args: Record<string, unknown>) => Promise<{ data: any[] }>;
+    };
+    const { data: carts } = await query.graph({
+      entity: "cart",
+      fields: ["id", "email", "completed_at", "order.id", "order.email", "order.total", "order.metadata"],
+      filters: { id: [cartId] },
+    });
+    const linked = carts?.[0]?.order;
+    if (linked?.id) return linked;
+  } catch (err) {
+    console.warn("[newebpay-checkout] cart→order graph 查詢失敗:", err);
+  }
+
+  // 備援：最近訂單（同 email）
+  if (cartEmail) {
+    try {
+      const query = req.scope.resolve("query") as {
+        graph: (args: Record<string, unknown>) => Promise<{ data: any[] }>;
+      };
+      const { data: orders } = await query.graph({
+        entity: "order",
+        fields: ["id", "email", "total", "metadata", "created_at"],
+        filters: { email: cartEmail },
+      });
+      const sorted = (orders || []).sort(
+        (a, b) =>
+          new Date(b.created_at || 0).getTime() -
+          new Date(a.created_at || 0).getTime(),
+      );
+      if (sorted[0]?.id) return sorted[0];
+    } catch (err) {
+      console.warn("[newebpay-checkout] order email 查詢失敗:", err);
+    }
+  }
+
+  return null;
+}
+
 async function completeMedusaOrder(
+  req: MedusaRequest,
   backendUrl: string,
   headers: Record<string, string>,
   cartId: string,
 ) {
   const idempotencyKey = `newebpay_complete_${cartId}`;
+
+  // 若 cart 已完成（重試付款表單），直接找回訂單
+  const existingCart = await storeFetch(
+    backendUrl,
+    `/store/carts/${cartId}`,
+    headers,
+  );
+  if (existingCart.data?.cart?.completed_at) {
+    const recovered = await recoverOrderAfterComplete(
+      req,
+      backendUrl,
+      headers,
+      cartId,
+    );
+    if (recovered) return recovered;
+  }
 
   const payColRes = await storeFetch(
     backendUrl,
@@ -70,15 +152,27 @@ async function completeMedusaOrder(
   );
   const payColId = payColRes.data?.payment_collection?.id;
   if (!payColId) {
+    console.error(
+      "[newebpay-checkout] payment-collections 失敗:",
+      payColRes.response.status,
+      payColRes.data,
+    );
     throw new Error("無法建立付款流程，請稍後再試。");
   }
 
-  await storeFetch(
+  const sessionRes = await storeFetch(
     backendUrl,
     `/store/payment-collections/${payColId}/payment-sessions`,
     headers,
     { method: "POST", body: JSON.stringify({ provider_id: PROVIDER_ID }) },
   );
+  if (!sessionRes.response.ok) {
+    console.error(
+      "[newebpay-checkout] payment-sessions 失敗:",
+      sessionRes.response.status,
+      sessionRes.data,
+    );
+  }
 
   const completeRes = await storeFetch(
     backendUrl,
@@ -91,14 +185,23 @@ async function completeMedusaOrder(
     return completeRes.data.order;
   }
 
-  if (completeRes.response.status === 409) {
-    const orderSearchRes = await storeFetch(
+  // 409：另一請求正在 / 已完成結帳；輪詢找回訂單（store/orders 需登入會 401）
+  if (
+    completeRes.response.status === 409 ||
+    existingCart.data?.cart ||
+    completeRes.data?.type === "cart"
+  ) {
+    const recovered = await recoverOrderAfterComplete(
+      req,
       backendUrl,
-      `/store/orders?cart_id=${cartId}`,
       headers,
+      cartId,
     );
-    if (orderSearchRes.data?.orders?.length > 0) {
-      return orderSearchRes.data.orders[0];
+    if (recovered) {
+      console.log(
+        `[newebpay-checkout] 自 race/409 恢復訂單: ${recovered.id}`,
+      );
+      return recovered;
     }
   }
 
@@ -174,7 +277,12 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   };
 
   try {
-    const order = await completeMedusaOrder(backendUrl, internalHeaders, cart_id);
+    const order = await completeMedusaOrder(
+      req,
+      backendUrl,
+      internalHeaders,
+      cart_id,
+    );
     if (!order?.id) {
       return res.status(500).json({ message: "訂單建立失敗，請聯絡客服或稍後再試。" });
     }
