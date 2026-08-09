@@ -10,7 +10,7 @@ const publicBackendUrl =
 
 const storeCors =
   process.env.STORE_CORS ||
-  "http://localhost:3000,https://jeko-e-sim.vercel.app"
+  "http://localhost:3000,http://localhost:3001,https://jeko-e-sim.vercel.app"
 
 const adminCors =
   process.env.ADMIN_CORS ||

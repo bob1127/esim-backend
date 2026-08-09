@@ -2,23 +2,56 @@ import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import { Modules } from "@medusajs/framework/utils";
 import { updateProductsWorkflow } from "@medusajs/core-flows";
 
+// 注意：分潤％／旅客折扣％（partner_terms）已改由 Medusa 原生管理員 API
+// （/admin/product-partner-terms，見 src/api/admin/product-partner-terms/route.ts
+// 與 src/admin/widgets/product-partner-terms.tsx）設定，不再開放於這支
+// 對外公開的 /store 端點——避免共用密鑰外洩就能竄改分潤／折扣的風險。
 const CONTENT_METADATA_KEYS = {
   detailed: "detailed_content_by_carrier",
   usage: "usage_content_by_carrier",
   faq: "faq_content_by_carrier",
   overview: "overview_notices_by_carrier",
   promo: "promo_offer_by_carrier",
+  features: "key_features_by_carrier",
+  specs: "carrier_specs_by_carrier",
+  profit: "carrier_profit_by_carrier",
+  subtitle: "subtitle_by_carrier",
 } as const;
 
 type HtmlContentType = "detailed" | "usage" | "faq";
-type ContentType = HtmlContentType | "overview" | "promo";
+type ContentType =
+  | HtmlContentType
+  | "overview"
+  | "promo"
+  | "features"
+  | "specs"
+  | "profit"
+  | "subtitle";
 
 function resolveContentType(raw: unknown): ContentType {
   if (raw === "usage") return "usage";
   if (raw === "faq") return "faq";
   if (raw === "overview") return "overview";
   if (raw === "promo") return "promo";
+  if (raw === "features") return "features";
+  if (raw === "specs") return "specs";
+  if (raw === "profit") return "profit";
+  if (raw === "subtitle") return "subtitle";
   return "detailed";
+}
+
+function parseJsonObjectMap(raw: unknown): Record<string, unknown> {
+  if (!raw) return {};
+  let data: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      return {};
+    }
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) return {};
+  return { ...(data as Record<string, unknown>) };
 }
 
 function parseContentMap(raw: unknown): Record<string, string> {
@@ -159,6 +192,10 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     discount_type?: string;
     discount_value?: number;
     message?: string;
+    features?: unknown;
+    specs?: unknown;
+    profit_percent?: unknown;
+    subtitle?: unknown;
   };
 
   const productId = String(body.productId || "").trim();
@@ -175,7 +212,15 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     return res.status(400).json({ error: "carrier 名稱過長" });
   }
 
-  if (contentType !== "overview" && contentType !== "promo" && html.length > 200_000) {
+  if (
+    contentType !== "overview" &&
+    contentType !== "promo" &&
+    contentType !== "features" &&
+    contentType !== "specs" &&
+    contentType !== "profit" &&
+    contentType !== "subtitle" &&
+    html.length > 200_000
+  ) {
     return res.status(400).json({ error: "內容過長" });
   }
 
@@ -251,6 +296,39 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         delete existing[carrier];
       }
 
+      metadata[metadataKey] = JSON.stringify(existing);
+      responsePayload[metadataKey] = existing;
+    } else if (contentType === "features") {
+      const existing = parseJsonObjectMap(product.metadata?.[metadataKey]);
+      const list = Array.isArray(body.features)
+        ? body.features.map((x) => String(x ?? "").trim()).filter(Boolean)
+        : [];
+      if (list.length) existing[carrier] = list;
+      else delete existing[carrier];
+      metadata[metadataKey] = JSON.stringify(existing);
+      responsePayload[metadataKey] = existing;
+    } else if (contentType === "specs") {
+      const existing = parseJsonObjectMap(product.metadata?.[metadataKey]);
+      const specs =
+        body.specs && typeof body.specs === "object" && !Array.isArray(body.specs)
+          ? (body.specs as Record<string, unknown>)
+          : null;
+      if (specs && Object.keys(specs).length) existing[carrier] = specs;
+      else delete existing[carrier];
+      metadata[metadataKey] = JSON.stringify(existing);
+      responsePayload[metadataKey] = existing;
+    } else if (contentType === "profit") {
+      const existing = parseJsonObjectMap(product.metadata?.[metadataKey]);
+      const n = Number(body.profit_percent);
+      if (Number.isFinite(n) && n > 0) existing[carrier] = n;
+      else delete existing[carrier];
+      metadata[metadataKey] = JSON.stringify(existing);
+      responsePayload[metadataKey] = existing;
+    } else if (contentType === "subtitle") {
+      const existing = parseJsonObjectMap(product.metadata?.[metadataKey]);
+      const subtitle = String(body.subtitle ?? "").trim();
+      if (subtitle) existing[carrier] = subtitle;
+      else delete existing[carrier];
       metadata[metadataKey] = JSON.stringify(existing);
       responsePayload[metadataKey] = existing;
     } else {
