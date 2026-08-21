@@ -4,73 +4,111 @@ import {
   DetailWidgetProps,
   AdminProductCategory,
 } from "@medusajs/framework/types";
-import { createClient } from "@supabase/supabase-js";
 
-// 🚀 初始化 Supabase
-const supabase = createClient(
-  "https://ppxaexmahiwmabkiwoct.supabase.co",
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBweGFleG1haGl3bWFia2l3b2N0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY1ODg3OTcsImV4cCI6MjA5MjE2NDc5N30.RQ_scSU6AQdOXLLxSxyrTa0edLkmJ2XldUdv6KYM32Q",
-);
+async function readErrorMessage(response: Response) {
+  try {
+    const data = await response.json();
+    return (
+      data?.message ||
+      data?.error ||
+      data?.type ||
+      JSON.stringify(data).slice(0, 200)
+    );
+  } catch {
+    return `${response.status} ${response.statusText}`.trim();
+  }
+}
 
 const CategoryImageUploadWidget = ({
   data,
 }: DetailWidgetProps<AdminProductCategory>) => {
   const [uploading, setUploading] = useState(false);
+  const [savingUrl, setSavingUrl] = useState(false);
+  const [manualUrl, setManualUrl] = useState("");
 
   const currentImageUrl = (data.metadata?.image_url as string) || "";
 
+  const saveImageUrl = async (imageUrl: string) => {
+    const response = await fetch(`/admin/product-categories/${data.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({
+        metadata: {
+          ...(data.metadata || {}),
+          image_url: imageUrl,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        `Medusa 更新分類失敗：${await readErrorMessage(response)}`,
+      );
+    }
+  };
+
   const handleUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const input = event.target;
     try {
-      const file = event.target.files?.[0];
+      const file = input.files?.[0];
       if (!file) return;
       setUploading(true);
 
-      // 1. 上傳至 Supabase Storage
-      const fileExt = file.name.split(".").pop();
-      const fileName = `cat_${data.id}_${Date.now()}.${fileExt}`;
-      const { error: uploadError } = await supabase.storage
-        .from("project-image")
-        .upload(fileName, file);
+      const formData = new FormData();
+      formData.append("files", file);
 
-      if (uploadError) throw uploadError;
-
-      // 2. 獲取公開網址
-      const {
-        data: { publicUrl },
-      } = supabase.storage.from("project-image").getPublicUrl(fileName);
-
-      // 3. 🚀 呼叫 Medusa API (加上管理員通行證 credentials)
-      const response = await fetch(`/admin/product-categories/${data.id}`, {
+      const uploadRes = await fetch("/admin/uploads", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        credentials: "include", // 👈 就是加了這一行！讓 API 知道你是管理員
-        body: JSON.stringify({
-          metadata: {
-            ...data.metadata,
-            image_url: publicUrl,
-          },
-        }),
+        credentials: "include",
+        body: formData,
       });
 
-      // 4. 嚴格的錯誤檢查，印出真正的失敗原因
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        console.error("Medusa 拒絕更新:", errData);
+      if (!uploadRes.ok) {
         throw new Error(
-          errData.message || errData.type || "Medusa 資料庫拒絕更新",
+          `圖片上傳失敗：${await readErrorMessage(uploadRes)}`,
         );
       }
 
-      // 5. 完成後刷新頁面
+      const uploaded = await uploadRes.json();
+      const publicUrl =
+        uploaded?.files?.[0]?.url ||
+        uploaded?.uploads?.[0]?.url ||
+        uploaded?.url;
+
+      if (!publicUrl) {
+        throw new Error("上傳成功但沒有回傳圖片網址");
+      }
+
+      await saveImageUrl(publicUrl);
       window.location.reload();
     } catch (error: any) {
-      alert(`發生錯誤: ${error.message}`);
+      const message =
+        error?.message === "Failed to fetch"
+          ? "無法連線上傳服務（Failed to fetch）。請確認 Medusa 後台仍在跑，並改走本機 /admin/uploads。"
+          : error?.message || "上傳失敗";
+      alert(`發生錯誤: ${message}`);
     } finally {
       setUploading(false);
+      input.value = "";
     }
   };
+
+  const handleSaveManualUrl = async () => {
+    const imageUrl = manualUrl.trim();
+    if (!imageUrl) return;
+    try {
+      setSavingUrl(true);
+      await saveImageUrl(imageUrl);
+      window.location.reload();
+    } catch (error: any) {
+      alert(`發生錯誤: ${error?.message || "儲存網址失敗"}`);
+    } finally {
+      setSavingUrl(false);
+    }
+  };
+
+  const busy = uploading || savingUrl;
 
   return (
     <div className="bg-white p-8 border border-gray-200 rounded-lg mt-4 shadow-sm">
@@ -81,9 +119,9 @@ const CategoryImageUploadWidget = ({
             此圖片將直接對接前台 eSIM 商店顯示。
           </p>
         </div>
-        {uploading && (
+        {busy && (
           <div className="flex items-center gap-2 text-blue-600 font-medium text-sm animate-pulse">
-            <span className="w-2 h-2 bg-blue-600 rounded-full"></span>{" "}
+            <span className="w-2 h-2 bg-blue-600 rounded-full"></span>
             正在處理中...
           </div>
         )}
@@ -115,14 +153,38 @@ const CategoryImageUploadWidget = ({
             </label>
             <input
               type="file"
-              accept="image/*"
+              accept="image/png,image/jpeg,image/webp,image/*"
               onChange={handleUpload}
-              disabled={uploading}
+              disabled={busy}
               className="block w-full text-sm text-gray-500 file:mr-4 file:py-2.5 file:px-6 file:rounded-lg file:border-0 file:text-sm file:font-bold file:bg-blue-600 file:text-white hover:file:bg-blue-700 cursor-pointer disabled:opacity-50"
             />
           </div>
+          <div className="bg-gray-50 p-6 rounded-lg border border-gray-100">
+            <label className="block text-sm font-medium text-stone-900 mb-2">
+              或填入圖片網址
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="url"
+                value={manualUrl}
+                onChange={(e) => setManualUrl(e.target.value)}
+                placeholder="/images/分類eSIM-泰國.png"
+                disabled={busy}
+                className="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm"
+              />
+              <button
+                type="button"
+                onClick={handleSaveManualUrl}
+                disabled={busy || !manualUrl.trim()}
+                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-50"
+              >
+                儲存
+              </button>
+            </div>
+          </div>
           <p className="text-xs text-gray-400 italic">
-            支援格式：PNG, JPG, WebP。建議尺寸：800x800px。
+            支援格式：PNG, JPG, WebP。建議尺寸：800x800px。圖片會上傳到 Medusa
+            本機檔案，不再經過 Supabase Storage。
           </p>
         </div>
       </div>
