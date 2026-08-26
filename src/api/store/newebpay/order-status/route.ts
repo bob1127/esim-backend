@@ -1,6 +1,25 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 
-type QrcodeInfo = { name: string; src: string };
+type QrcodeInfo = {
+  name: string;
+  src: string;
+  iccid?: string;
+  smdp?: string;
+  activationCode?: string;
+  androidCode?: string;
+  lpa?: string;
+  apn?: {
+    apn?: string;
+    username?: string;
+    password?: string;
+    auth?: string;
+  } | null;
+  iosInstallUrl?: string;
+  androidInstallUrl?: string;
+  serviceDays?: string;
+  networks?: string;
+  topupId?: string;
+};
 
 function normalizeSrc(raw: any): string {
   const str = String(raw || "");
@@ -51,9 +70,14 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     const isPaid =
       order.payment_status === "captured" ||
       order.payment_status === "partially_captured" ||
-      !!meta.newebpay_pay_time;
+      !!meta.newebpay_pay_time ||
+      !!meta.linepay_pay_time;
 
-    const paymentType = String(meta.newebpay_payment_type || "");
+    const paymentType = String(
+      meta.newebpay_payment_type ||
+        (meta.linepay_pay_time || meta.linepay_transaction_id ? "LINEPAY" : "") ||
+        "",
+    );
     const statusLabel = isPaid
       ? "SUCCESS"
       : offsiteInfo
@@ -65,8 +89,12 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       isPaid,
       MerchantOrderNo: orderNo,
       PaymentType: paymentType,
-      PayTime: String(meta.newebpay_pay_time || ""),
-      TradeNo: String(meta.newebpay_trade_no || ""),
+      PayTime: String(meta.newebpay_pay_time || meta.linepay_pay_time || ""),
+      TradeNo: String(
+        meta.newebpay_trade_no ||
+          String(meta.linepay_transaction_id || "").replace(/^lp:/, "") ||
+          "",
+      ),
       wooStatus: String(order.status || ""),
     };
 
@@ -84,8 +112,23 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
                 it?.name && String(it.name).trim()
                   ? it.name
                   : `eSIM #${idx + 1}`;
-              const src = normalizeSrc(it?.src ?? it);
-              return src ? { name, src } : null;
+              const src = normalizeSrc(it?.src ?? (typeof it === "string" ? it : ""));
+              if (!src && !it?.lpa && !it?.iccid) return null;
+              return {
+                name,
+                src: src || "",
+                iccid: it?.iccid || "",
+                smdp: it?.smdp || "",
+                activationCode: it?.activationCode || "",
+                androidCode: it?.androidCode || "",
+                lpa: it?.lpa || "",
+                apn: it?.apn || null,
+                iosInstallUrl: it?.iosInstallUrl || "",
+                androidInstallUrl: it?.androidInstallUrl || "",
+                serviceDays: it?.serviceDays || "",
+                networks: it?.networks || "",
+                topupId: it?.topupId || "",
+              } as QrcodeInfo;
             })
             .filter(Boolean) as QrcodeInfo[];
         }

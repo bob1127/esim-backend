@@ -3,6 +3,12 @@ import {
   newebpayAesEncrypt,
   newebpayShaEncrypt,
 } from "../../../lib/newebpay/crypto";
+import {
+  resolveTwdAmount,
+  sumLineItemsAmount,
+  loadOrderPayableAmount,
+} from "../../../lib/orderAmount";
+import { buildMemberIdentityMetadata } from "../../../lib/memberIdentity";
 
 const PROVIDER_ID = "pp_newebpay_newebpay";
 const SANDBOX_GATEWAY_URL = "https://ccore.newebpay.com/MPG/mpg_gateway";
@@ -288,8 +294,45 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     }
 
     const merchantOrderNo = toMerchantOrderNo(order.id);
-    const amount = Math.max(Math.round(Number(order.total ?? 0)), 1);
+    // 金額一律由 DB 重新計算，禁止 1 元兜底；orderInfo.totalPrice（前端值）僅供比對記錄，不採用
+    const amount =
+      resolveTwdAmount(order.total, sumLineItemsAmount((order as any).items)) ||
+      (await loadOrderPayableAmount(req.scope, order.id, 0));
+    if (!amount || amount < 1) {
+      return res.status(400).json({
+        message: `訂單金額異常（${amount || 0}），無法建立藍新付款。請確認購物車商品價格後重試。`,
+        orderId: order.id,
+      });
+    }
     const email = order.email || orderInfo?.email || "customer@example.com";
+
+    // 夥伴店訂單：把 cart.metadata 內「已由簽章驗證過」的分潤歸屬複製到 order，
+    // 供藍新 notify 付款成功後寫回 Supabase 供結算。金額仍以 order.total（＝夥伴
+    // 售價，已由 apply-partner-pricing 覆寫）為準，不採信前端傳來的任何金額。
+    let partnerMeta: Record<string, unknown> = {};
+    try {
+      const query = req.scope.resolve("query") as {
+        graph: (args: Record<string, unknown>) => Promise<{ data: any[] }>;
+      };
+      const { data: carts } = await query.graph({
+        entity: "cart",
+        fields: ["id", "metadata"],
+        filters: { id: [cart_id] },
+      });
+      const cm = (carts?.[0]?.metadata || {}) as Record<string, unknown>;
+      if (cm.is_partner_order) {
+        partnerMeta = {
+          is_partner_order: true,
+          partner_store_id: cm.partner_store_id ?? "",
+          partner_id: cm.partner_id ?? "",
+          partner_total: cm.partner_total ?? amount,
+          partner_b2b_cost: cm.partner_b2b_cost ?? 0,
+          partner_profit: cm.partner_profit ?? 0,
+        };
+      }
+    } catch (cmErr) {
+      console.error("⚠️ [newebpay-checkout] 讀取 cart 分潤 metadata 失敗:", cmErr);
+    }
 
     try {
       const orderModule = req.scope.resolve("order") as {
@@ -303,6 +346,10 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
           metadata: {
             ...(order.metadata || {}),
             newebpay_merchant_order_no: merchantOrderNo,
+            newebpay_amount: amount,
+            // 會員身分「蓋章」：讓會員中心可依此對回本人訂單
+            ...buildMemberIdentityMetadata(orderInfo, email),
+            ...partnerMeta,
           },
         },
       ]);

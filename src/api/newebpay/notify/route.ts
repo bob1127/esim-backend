@@ -6,6 +6,13 @@ import {
   buildOffsiteInfo,
   firstPayMoment,
 } from "../../../lib/newebpay/crypto";
+import {
+  resolveTwdAmount,
+  sumLineItemsAmount,
+  loadOrderPayableAmount,
+  verifyPaymentAmount,
+} from "../../../lib/orderAmount";
+import { upsertPartnerOrderToSupabase } from "../../../lib/partnerOrderSync";
 
 /**
  * 藍新 MPG 背景通知（NotifyURL）。這是唯一權威的付款狀態來源：
@@ -99,7 +106,33 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       return res.status(200).send("OK");
     }
 
-    /* C) 已付款 → authorize + capture（冪等）→ 觸發 eSIM 發貨 */
+    /* C) 已付款 → 先核對金額，再 authorize + capture（冪等）→ 觸發 eSIM 發貨 */
+
+    // 金額核對：藍新回報的 Amt（已驗簽）必須等於 DB 重新計算的訂單金額，
+    // 以及建單時記錄的 newebpay_amount。任何不符即中止，不 capture、不發貨。
+    const expected =
+      resolveTwdAmount(order.total, sumLineItemsAmount(order.items)) ||
+      (await loadOrderPayableAmount(req.scope, order.id, 0));
+    const reserved = resolveTwdAmount(order.metadata?.newebpay_amount);
+    const paid = resolveTwdAmount(result?.Amt);
+    const amountError = verifyPaymentAmount({ expected, reserved, paid });
+    if (amountError) {
+      console.error(
+        `[newebpay-notify:${rid}] 金額核對失敗（訂單 ${order.id}）: ${amountError}`,
+      );
+      await orderModule.updateOrders([
+        {
+          id: order.id,
+          metadata: {
+            ...(order.metadata || {}),
+            newebpay_amount_mismatch: `${amountError} @ ${new Date().toISOString()}`,
+          },
+        },
+      ]);
+      // 回 200 避免藍新重試風暴；此訂單需人工對帳處理
+      return res.status(200).send("OK");
+    }
+
     const alreadyPaid = !!order.metadata?.newebpay_pay_time;
 
     if (!alreadyPaid && order.payment_status !== "captured") {
@@ -115,7 +148,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
           if (payment?.id) {
             await paymentModule.capturePayment({
               payment_id: payment.id,
-              amount: order.total,
+              amount: expected,
             });
             console.log(`[newebpay-notify:${rid}] 已 capture: ${order.id}`);
           }
@@ -144,6 +177,25 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         },
       },
     ]);
+
+    /* C-1) 夥伴店訂單 → 付款成功後把分潤列寫回 Supabase（供夥伴後台結算／出金）。
+       金額一律用 DB 重算後的 expected（＝夥伴售價），分潤歸屬用 order.metadata
+       內「已由簽章驗證過」的值；以 medusa_order_id 冪等 upsert，重試不重複。 */
+    if (order.metadata?.is_partner_order) {
+      try {
+        await upsertPartnerOrderToSupabase({
+          order,
+          merchantOrderNo,
+          totalAmount: expected,
+          payType,
+        });
+      } catch (syncErr: any) {
+        console.error(
+          `[newebpay-notify:${rid}] 夥伴訂單同步 Supabase 失敗:`,
+          syncErr?.message || syncErr,
+        );
+      }
+    }
 
     const hasQrcodes = !!order.metadata?.esim_qrcodes;
     const hasInvoice = !!order.metadata?.ezpay_invoice_number;
