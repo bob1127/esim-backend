@@ -405,6 +405,13 @@ export async function POST(
           }
         }
       })
+    } else if (needFulfill || needInvoice) {
+      console.warn(
+        `[linepay-confirm] 略過發貨／開票（訂單 ${order.id}）：` +
+          `需在 Railway 設定 FULFILLMENT_INTERNAL_URL=https://www.jeko-esim.com.tw` +
+          ` 與 FULFILLMENT_INTERNAL_SECRET（須與 Vercel 前台相同）。` +
+          ` 目前 url=${fulfillBase ? "有" : "無"} secret=${fulfillSecret ? "有" : "無"}`
+      )
     }
 
     return res.status(200).json({
