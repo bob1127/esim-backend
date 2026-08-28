@@ -1,7 +1,7 @@
 /**
  * 付款成功 → 前台 append-accounting → Google Sheet
  */
-type AccountingPayload = {
+export type AccountingPayload = {
   orderId: string;
   amount: number;
   paymentProvider: "newebpay" | "linepay";
