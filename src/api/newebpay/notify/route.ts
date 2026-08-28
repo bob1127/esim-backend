@@ -14,6 +14,7 @@ import {
 } from "../../../lib/orderAmount";
 import { upsertPartnerOrderToSupabase } from "../../../lib/partnerOrderSync";
 import { appendAccountingSheet, buildAccountingPayload } from "../../../lib/appendAccountingSheet";
+import { notifyAdminNewOrder } from "../../../lib/appendAdminOrderNotify";
 
 /**
  * 藍新 MPG 背景通知（NotifyURL）。這是唯一權威的付款狀態來源：
@@ -180,14 +181,14 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     ]);
 
     if (!alreadyPaid) {
-      void appendAccountingSheet(
-        buildAccountingPayload(order, {
-          amount: expected,
-          paymentProvider: "newebpay",
-          payTime: String(firstPayMoment(result)),
-          tradeNo: String(result?.TradeNo || merchantOrderNo),
-        }),
-      );
+      const accountingPayload = buildAccountingPayload(order, {
+        amount: expected,
+        paymentProvider: "newebpay",
+        payTime: String(firstPayMoment(result)),
+        tradeNo: String(result?.TradeNo || merchantOrderNo),
+      });
+      void appendAccountingSheet(accountingPayload);
+      void notifyAdminNewOrder(accountingPayload);
     }
 
     /* C-1) 夥伴店訂單 → 付款成功後把分潤列寫回 Supabase（供夥伴後台結算／出金）。

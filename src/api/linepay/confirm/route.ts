@@ -12,6 +12,7 @@ import {
 } from "../../../lib/linePayIds"
 import { upsertPartnerOrderToSupabase } from "../../../lib/partnerOrderSync"
 import { appendAccountingSheet, buildAccountingPayload } from "../../../lib/appendAccountingSheet"
+import { notifyAdminNewOrder } from "../../../lib/appendAdminOrderNotify"
 
 const LINEPAY_BASE = process.env.LINEPAY_API_BASE || "https://api-pay.line.me"
 
@@ -239,14 +240,14 @@ export async function POST(
     ])
 
     if (!alreadyPaid) {
-      void appendAccountingSheet(
-        buildAccountingPayload(order, {
-          amount,
-          paymentProvider: "linepay",
-          payTime: paidMeta.linepay_pay_time as string,
-          tradeNo: String(confirmedTxId || orderNo),
-        }),
-      )
+      const accountingPayload = buildAccountingPayload(order, {
+        amount,
+        paymentProvider: "linepay",
+        payTime: paidMeta.linepay_pay_time as string,
+        tradeNo: String(confirmedTxId || orderNo),
+      })
+      void appendAccountingSheet(accountingPayload)
+      void notifyAdminNewOrder(accountingPayload)
     }
 
     // 夥伴店訂單 → 付款成功後把分潤列寫回 Supabase（冪等 upsert）
