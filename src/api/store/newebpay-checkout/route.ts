@@ -329,6 +329,10 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
           partner_b2b_cost: cm.partner_b2b_cost ?? 0,
           partner_profit: cm.partner_profit ?? 0,
         };
+      } else if (cm.jeko_referral_code) {
+        partnerMeta = {
+          jeko_referral_code: String(cm.jeko_referral_code),
+        };
       }
     } catch (cmErr) {
       console.error("⚠️ [newebpay-checkout] 讀取 cart 分潤 metadata 失敗:", cmErr);

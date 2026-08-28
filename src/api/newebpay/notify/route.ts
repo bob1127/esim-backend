@@ -13,6 +13,7 @@ import {
   verifyPaymentAmount,
 } from "../../../lib/orderAmount";
 import { upsertPartnerOrderToSupabase } from "../../../lib/partnerOrderSync";
+import { appendAccountingSheet, buildAccountingPayload } from "../../../lib/appendAccountingSheet";
 
 /**
  * 藍新 MPG 背景通知（NotifyURL）。這是唯一權威的付款狀態來源：
@@ -177,6 +178,17 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         },
       },
     ]);
+
+    if (!alreadyPaid) {
+      void appendAccountingSheet(
+        buildAccountingPayload(order, {
+          amount: expected,
+          paymentProvider: "newebpay",
+          payTime: String(firstPayMoment(result)),
+          tradeNo: String(result?.TradeNo || merchantOrderNo),
+        }),
+      );
+    }
 
     /* C-1) 夥伴店訂單 → 付款成功後把分潤列寫回 Supabase（供夥伴後台結算／出金）。
        金額一律用 DB 重算後的 expected（＝夥伴售價），分潤歸屬用 order.metadata
