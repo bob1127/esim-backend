@@ -9,6 +9,7 @@ import { getSupabaseAdmin } from "./supabaseAdmin";
 
 type MedusaOrderLike = {
   id: string;
+  display_id?: number | string | null;
   email?: string | null;
   metadata?: Record<string, any> | null;
   items?: Array<{
@@ -93,6 +94,7 @@ export async function upsertPartnerOrderToSupabase(params: {
     medusa_order_id: order.id,
     store_id: storeId,
     partner_id: partnerId,
+    channel: "store",
     customer_email: order.email
       ? String(order.email).trim().toLowerCase()
       : null,
@@ -106,20 +108,28 @@ export async function upsertPartnerOrderToSupabase(params: {
       provider: "newebpay",
       merchant_order_no: merchantOrderNo,
       payment_type: payType || "",
+      ...(order.display_id != null && order.display_id !== ""
+        ? { display_id: Number(order.display_id) || order.display_id }
+        : {}),
     },
     updated_at: new Date().toISOString(),
   };
 
-  if (existing?.id) {
-    const { error } = await supabase
-      .from("orders")
-      .update(row)
-      .eq("id", existing.id);
-    if (error) throw new Error(error.message);
-    return { ok: true };
+  const writeRow = async (payload: Record<string, unknown>) => {
+    if (existing?.id) {
+      return supabase.from("orders").update(payload).eq("id", existing.id);
+    }
+    return supabase.from("orders").insert(payload);
+  };
+
+  let { error } = await writeRow(row);
+
+  // migration 20260828 未跑時（缺 channel 欄位）降級寫入，避免擋住分潤同步
+  if (error && /channel|column/i.test(error.message || "")) {
+    const { channel: _channel, ...slim } = row as any;
+    ({ error } = await writeRow(slim));
   }
 
-  const { error } = await supabase.from("orders").insert(row);
   if (error) {
     // 併發下另一個 notify 可能已插入 → 唯一鍵衝突視為成功
     if (/duplicate key|unique/i.test(error.message || "")) {

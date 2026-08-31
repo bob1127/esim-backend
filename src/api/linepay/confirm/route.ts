@@ -11,8 +11,16 @@ import {
   storeLinePayTxId,
 } from "../../../lib/linePayIds"
 import { upsertPartnerOrderToSupabase } from "../../../lib/partnerOrderSync"
+import {
+  upsertReferralOrderToSupabase,
+  buildReferralOrderMetadata,
+} from "../../../lib/referralOrderSync"
 import { appendAccountingSheet, buildAccountingPayload } from "../../../lib/appendAccountingSheet"
 import { notifyAdminNewOrder } from "../../../lib/appendAdminOrderNotify"
+import {
+  fulfillPaidOrderWithRetry,
+  stringifyEsimQrcodes,
+} from "../../../lib/orderFulfillment"
 
 const LINEPAY_BASE = process.env.LINEPAY_API_BASE || "https://api-pay.line.me"
 
@@ -26,14 +34,6 @@ function signLinePay(
     .createHmac("sha256", channelSecret)
     .update(channelSecret + apiPath + body + nonce)
     .digest("base64")
-}
-
-function normalizeQrSrc(raw: any): string {
-  const str = String(raw || "")
-  if (!str) return ""
-  return str.startsWith("http") || str.startsWith("data:image/")
-    ? str
-    : `data:image/png;base64,${str}`
 }
 
 /** 付款已入帳後：背景發貨／開票，不擋 confirm → thank-you */
@@ -101,17 +101,24 @@ export async function POST(
       entity: "order",
       fields: [
         "id",
+        "display_id",
         "email",
         "total",
         "metadata",
         "payment_status",
         "items.title",
         "items.product_title",
+        "items.product_id",
         "items.variant_sku",
         "items.quantity",
         "items.unit_price",
         "items.subtotal",
+        "items.total",
         "items.metadata",
+        // 優惠連結分潤需要變體成本／電信商才能在伺服器端重算（見 referralOrderSync）
+        "items.variant.id",
+        "items.variant.sku",
+        "items.variant.metadata",
         "payment_collections.payment_sessions.id",
       ],
       filters: { id: [orderId] },
@@ -224,8 +231,38 @@ export async function POST(
       }
     }
 
+    /* 優惠連結（referral）訂單 → 伺服器端重算分潤後寫回 Supabase。
+       與夥伴店互斥：夥伴店的分潤在結帳時已簽章寫入 metadata，優惠連結是主站同價
+       訂單，分潤要依 partners.referral_rate／商品電信商趴數重算。
+       同步失敗不影響發貨；confirm 重試會再算一次（medusa_order_id 冪等）。 */
+    let referralMeta: Record<string, unknown> = {}
+    if (!order.metadata?.is_partner_order && order.metadata?.jeko_referral_code) {
+      try {
+        const referral = await upsertReferralOrderToSupabase({
+          order,
+          merchantOrderNo: orderNo,
+          totalAmount: amount,
+          payType: "LINEPAY",
+          paymentProvider: "linepay",
+          query,
+        })
+        referralMeta = buildReferralOrderMetadata(referral)
+        if (referral.ok && !referral.skipped) {
+          console.log(
+            `[linepay-confirm] 優惠連結分潤已同步: partner=${referral.partnerId} 分潤=${referral.partnerProfit} 成本=${referral.b2bCost}`,
+          )
+        }
+      } catch (refErr: any) {
+        console.error(
+          "[linepay-confirm] 優惠連結訂單同步 Supabase 失敗:",
+          refErr?.message || refErr,
+        )
+      }
+    }
+
     const paidMeta = {
       ...(order.metadata || {}),
+      ...referralMeta,
       linepay_order_no: orderNo,
       linepay_transaction_id: storeLinePayTxId(confirmedTxId),
       linepay_pay_time: new Date().toISOString(),
@@ -329,45 +366,60 @@ export async function POST(
 
         if (needFulfill) {
           try {
-            const fulfillRes = await fetch(`${base}/api/internal/fulfill-order`, {
-              method: "POST",
-              headers,
-              body: JSON.stringify({
-                orderId: order.id,
-                email: order.email,
-                items: lineItems.map((it: any) => ({
-                  name: it.name,
-                  sku: it.sku,
-                  planId: it.planId,
-                  quantity: it.quantity,
-                })),
-              }),
+            await patchMeta({ fulfillment_status: "processing" })
+            const existingTopupIds = (() => {
+              try {
+                const raw = paidMeta?.fulfillment_topup_ids
+                const parsed =
+                  typeof raw === "string" ? JSON.parse(raw) : raw
+                return Array.isArray(parsed) ? parsed : []
+              } catch {
+                return []
+              }
+            })()
+
+            const result = await fulfillPaidOrderWithRetry({
+              fulfillBase: base,
+              fulfillSecret,
+              orderId: order.id,
+              email: order.email,
+              items: lineItems.map((it: any) => ({
+                name: it.name,
+                sku: it.sku,
+                planId: it.planId,
+                quantity: it.quantity,
+              })),
+              existingTopupIds,
+              logPrefix: `[linepay-confirm:${order.id}]`,
             })
-            const fulfillData = await fulfillRes.json().catch(() => ({}))
-            if (
-              fulfillRes.ok &&
-              Array.isArray(fulfillData?.qrcodes) &&
-              fulfillData.qrcodes.length
-            ) {
+
+            if (result.topupIds.length) {
               await patchMeta({
-                esim_qrcodes: JSON.stringify(
-                  fulfillData.qrcodes.map((q: any) => ({
-                    ...q,
-                    name: q?.name || "eSIM",
-                    src: normalizeQrSrc(q?.src),
-                  }))
-                ),
+                fulfillment_topup_ids: JSON.stringify(result.topupIds),
+              })
+            }
+
+            if (result.ok && result.qrcodes.length) {
+              await patchMeta({
+                esim_qrcodes: stringifyEsimQrcodes(result.qrcodes),
                 fulfillment_status: "fulfilled",
                 fulfillment_error: "",
               })
-              console.log(`[linepay-confirm] 背景發貨完成: ${order.id}`)
+              console.log(
+                `[linepay-confirm] 背景發貨完成: ${order.id} attempts=${result.attempts}`,
+              )
             } else {
-              const msg = String(fulfillData?.message || `HTTP ${fulfillRes.status}`)
               await patchMeta({
                 fulfillment_status: "failed",
-                fulfillment_error: msg.slice(0, 500),
+                fulfillment_error: String(result.message || "fulfill failed").slice(
+                  0,
+                  500,
+                ),
               })
-              console.error(`[linepay-confirm] 背景發貨失敗: ${order.id}`, msg)
+              console.error(
+                `[linepay-confirm] 背景發貨失敗（已重試）: ${order.id}`,
+                result.message,
+              )
             }
           } catch (e: any) {
             await patchMeta({

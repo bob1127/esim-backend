@@ -142,10 +142,16 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       offsiteInfo,
       offsitePending: !isPaid && !!offsiteInfo,
       qrcodes,
+      fulfillmentStatus: String(meta.fulfillment_status || "").trim() || null,
+      // 不把內部錯誤原文丟給客人（可能含 stack／供應商細節）
+      fulfillmentFailed:
+        String(meta.fulfillment_status || "").toLowerCase() === "failed",
       message: qrcodes.length
         ? undefined
         : isPaid
-          ? "尚未找到任何 eSIM QRCode，請稍後再試或聯繫客服。"
+          ? String(meta.fulfillment_status || "").toLowerCase() === "failed"
+            ? "eSIM 產生遇到問題，系統已在補發；若久未收到請聯繫客服。"
+            : "尚未找到任何 eSIM QRCode，請稍後再試或聯繫客服。"
           : undefined,
     });
   } catch (error: any) {

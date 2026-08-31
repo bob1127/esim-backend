@@ -1,6 +1,7 @@
 /**
  * Medusa 訂單利潤計算（Admin 訂單詳情用）
  * - 夥伴店：信任 order.metadata.partner_*（結帳時已簽章寫入）
+ * - 優惠連結：主站同價，再扣 order.metadata.referral_partner_profit（付款成功時算好）
  * - 主站：營收 − Σ(數量 × variant.metadata.cost_price)
  */
 import { resolveTwdAmount, sumLineItemsAmount } from "./orderAmount"
@@ -19,17 +20,19 @@ export type OrderProfitLine = {
 export type OrderProfitResult = {
   order_id: string
   currency: "TWD"
-  channel: "partner" | "main" | "unknown"
+  channel: "partner" | "referral" | "main" | "unknown"
   revenue: number
   cost: number
   profit: number
-  /** 夥伴店：夥伴分潤 */
+  /** 夥伴店／優惠連結：夥伴分潤 */
   partner_profit?: number
   /** 夥伴店：平台毛利 ≈ revenue − b2b − partner_profit */
   platform_profit?: number
   partner_b2b_cost?: number
   partner_store_id?: string
   partner_id?: string
+  /** 優惠連結：夥伴代碼 */
+  referral_code?: string
   missing_cost_lines: number
   lines: OrderProfitLine[]
   note?: string
@@ -140,6 +143,35 @@ export function computeOrderProfit(order: any): OrderProfitResult {
 
   const cost = lines.reduce((s, l) => s + l.line_cost, 0)
   const missing = lines.filter((l) => l.missing_cost).length
+
+  // 優惠連結訂單：官網同價的主站訂單，但要再扣掉付款成功時算好的夥伴分潤
+  const referralCode = meta.jeko_referral_code
+    ? String(meta.jeko_referral_code)
+    : ""
+  if (referralCode) {
+    const referralProfit = Math.round(num(meta.referral_partner_profit))
+    const platformProfit = revenue - cost - referralProfit
+    return {
+      order_id: String(order?.id || ""),
+      currency: "TWD",
+      channel: "referral",
+      revenue,
+      cost,
+      profit: platformProfit,
+      partner_profit: referralProfit,
+      platform_profit: platformProfit,
+      partner_id: meta.referral_partner_id
+        ? String(meta.referral_partner_id)
+        : undefined,
+      referral_code: referralCode,
+      missing_cost_lines: missing,
+      lines,
+      note:
+        missing > 0
+          ? `有 ${missing} 項商品缺少 cost_price，利潤可能偏高`
+          : "優惠連結訂單：官網同價，平台利潤已扣夥伴分潤",
+    }
+  }
 
   return {
     order_id: String(order?.id || ""),

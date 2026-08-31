@@ -5,7 +5,7 @@ import { Container, Heading, Text, Badge } from "@medusajs/ui"
 
 type ProfitPayload = {
   order_id: string
-  channel: "partner" | "main" | "unknown"
+  channel: "partner" | "referral" | "main" | "unknown"
   revenue: number
   cost: number
   profit: number
@@ -14,6 +14,7 @@ type ProfitPayload = {
   partner_b2b_cost?: number
   partner_store_id?: string
   partner_id?: string
+  referral_code?: string
   missing_cost_lines: number
   lines: Array<{
     title: string
@@ -98,12 +99,16 @@ const OrderProfitWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
     }
   }, [orderId])
 
-  const missingLines =
-    profit?.channel === "main"
-      ? (profit.lines || []).filter((l) => l.missing_cost)
-      : []
+  // 主站與優惠連結都是用變體 cost_price 算成本，兩者都要做缺成本防呆
+  const costFromVariants =
+    profit?.channel === "main" || profit?.channel === "referral"
+  const missingLines = costFromVariants
+    ? (profit?.lines || []).filter((l) => l.missing_cost)
+    : []
   const hasMissingCost =
-    profit?.channel === "main" && (profit.missing_cost_lines || 0) > 0
+    costFromVariants && (profit?.missing_cost_lines || 0) > 0
+  const showPartnerShare =
+    profit?.channel === "partner" || profit?.channel === "referral"
 
   return (
     <Container className="divide-y p-0">
@@ -116,6 +121,10 @@ const OrderProfitWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
         ) : profit?.channel === "partner" ? (
           <Badge color="blue" size="2xsmall">
             夥伴店
+          </Badge>
+        ) : profit?.channel === "referral" ? (
+          <Badge color="purple" size="2xsmall">
+            優惠連結
           </Badge>
         ) : profit?.channel === "main" ? (
           <Badge color="green" size="2xsmall">
@@ -175,14 +184,16 @@ const OrderProfitWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
               }
               value={twd(profit.cost)}
             />
-            {profit.channel === "partner" ? (
+            {showPartnerShare ? (
               <>
                 <Row
                   label="夥伴分潤"
                   value={twd(profit.partner_profit)}
                 />
                 <Row
-                  label="平台利潤"
+                  label={
+                    hasMissingCost ? "平台利潤（可能偏高）" : "平台利潤"
+                  }
                   value={twd(profit.platform_profit ?? profit.profit)}
                   emphasize
                 />
@@ -199,13 +210,17 @@ const OrderProfitWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
               <Row label="store_id" value={String(profit.partner_store_id)} />
             ) : null}
 
+            {profit.referral_code ? (
+              <Row label="推薦代碼" value={profit.referral_code} />
+            ) : null}
+
             {profit.note && !hasMissingCost ? (
               <Text size="xsmall" className="text-ui-fg-muted mt-1">
                 {profit.note}
               </Text>
             ) : null}
 
-            {profit.channel === "main" && profit.lines?.length > 0 ? (
+            {costFromVariants && profit.lines?.length > 0 ? (
               <div className="mt-3 flex flex-col gap-2 border-t border-ui-border-base pt-3">
                 <Text size="small" weight="plus">
                   明細成本
