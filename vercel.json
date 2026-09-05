@@ -4,6 +4,18 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
+      "source": "/newebpay/:path*",
+      "destination": "https://esim-backend-production-f90c.up.railway.app/newebpay/:path*"
+    },
+    {
+      "source": "/linepay/:path*",
+      "destination": "https://esim-backend-production-f90c.up.railway.app/linepay/:path*"
+    },
+    {
+      "source": "/tappay/:path*",
+      "destination": "https://esim-backend-production-f90c.up.railway.app/tappay/:path*"
+    },
+    {
       "source": "/store/:path*",
       "destination": "https://esim-backend-production-f90c.up.railway.app/store/:path*"
     },
