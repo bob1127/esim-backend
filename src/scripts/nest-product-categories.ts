@@ -29,7 +29,7 @@ const PARENTS = [
   },
 ] as const
 
-const PARENT_HANDLES = new Set(PARENTS.map((p) => p.handle))
+const PARENT_HANDLES = new Set<string>(PARENTS.map((p) => p.handle))
 
 export default async function nestProductCategories({ container }: ExecArgs) {
   const logger = container.resolve(ContainerRegistrationKeys.LOGGER)
