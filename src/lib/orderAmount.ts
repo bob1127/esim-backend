@@ -14,6 +14,56 @@ type MedusaScope = {
   resolve: (key: string) => unknown
 }
 
+/**
+ * 讀訂單金額時「必須」帶上的 fields。
+ *
+ * Medusa v2 陷阱（已踩過：漏開發票）：query.graph({ entity: "order" }) 只窄選
+ * `items.<欄位>`（例如 items.unit_price）時，所有計算欄位都會變 0 ——
+ * order.total、items.total、items.subtotal 全歸零，只有 items.unit_price 是真的。
+ * 帶 `summary.*` 也救不回來，唯一有效的是 `items.*`。
+ *
+ * 危險之處：此時只剩「unit_price × 數量」可用，而它不含 promotion adjustments，
+ * 有折扣的訂單會算出未折扣金額 → verifyPaymentAmount 判定不符 → 整單不 capture、
+ * 不發貨、不開票。
+ */
+export const ORDER_TOTALS_FIELDS = [
+  "total",
+  "subtotal",
+  "item_total",
+  "discount_total",
+  "summary.*",
+  "items.*",
+]
+
+/**
+ * 從已載入的訂單解析應付金額（折扣安全）。
+ *
+ * 優先信任計算好的 total／summary；明細加總不含折扣，只有在確定沒有折扣時才用。
+ * 有折扣卻算不出 total（fields 漏帶 items.*）時回 0，逼呼叫端改走
+ * loadOrderPayableAmount 重查，避免把未折扣金額當應付額。
+ */
+export function resolveOrderTotalDiscountSafe(order: unknown): number {
+  const o = (order || {}) as Record<string, any>
+  const fromTotals = resolveTwdAmount(
+    o.total,
+    o.summary?.total,
+    o.summary?.current_order_total,
+    o.summary?.raw_current_order_total,
+    o.item_total
+  )
+  if (fromTotals > 0) return fromTotals
+
+  const items = Array.isArray(o.items) ? o.items : []
+  const hasDiscount =
+    Number(o.discount_total || 0) > 0 ||
+    items.some(
+      (it: any) => Array.isArray(it?.adjustments) && it.adjustments.length > 0
+    )
+  if (hasDiscount) return 0
+
+  return sumLineItemsAmount(items)
+}
+
 /** 解析 TWD 整數金額；解析不到正數回 0（呼叫端必須拒絕 0） */
 export function resolveTwdAmount(...candidates: unknown[]): number {
   for (const raw of candidates) {
@@ -91,17 +141,8 @@ export async function loadOrderPayableAmount(
       entity: "order",
       fields: [
         "id",
-        "total",
-        "subtotal",
-        "item_total",
-        "summary.*",
-        "items.quantity",
-        "items.unit_price",
-        "items.subtotal",
-        "items.total",
-        "items.raw_unit_price",
-        "items.raw_total",
-        "items.raw_subtotal",
+        // items.* 不可省：少了它 total／items.total 會全變 0（見 ORDER_TOTALS_FIELDS）
+        ...ORDER_TOTALS_FIELDS,
         "payment_collections.amount",
         "payment_collection.amount",
       ],

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { defineWidgetConfig } from "@medusajs/admin-sdk";
 import type { DetailWidgetProps, AdminProduct } from "@medusajs/framework/types";
+import { useShowEsimCarrierWidgets } from "../lib/useIsPhysicalProduct";
 
 /**
  * 商品頁小工具：設定「專屬連結夥伴」各電信商的分潤％／旅客折扣％。
@@ -28,7 +29,9 @@ const inputStyle: React.CSSProperties = {
   textAlign: "right",
 };
 
-const ProductPartnerTermsWidget = ({ data }: DetailWidgetProps<AdminProduct>) => {
+const ProductPartnerTermsWidgetInner = ({
+  data,
+}: DetailWidgetProps<AdminProduct>) => {
   const productId = data.id;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -236,6 +239,14 @@ const ProductPartnerTermsWidget = ({ data }: DetailWidgetProps<AdminProduct>) =>
       ) : null}
     </div>
   );
+};
+
+const ProductPartnerTermsWidget = (
+  props: DetailWidgetProps<AdminProduct>,
+) => {
+  const show = useShowEsimCarrierWidgets(props.data as Record<string, any>);
+  if (!show) return null;
+  return <ProductPartnerTermsWidgetInner {...props} />;
 };
 
 export const config = defineWidgetConfig({

@@ -1,16 +1,13 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
-import crypto from "crypto"
 import {
   resolveTwdAmount,
   sumLineItemsAmount,
-  loadOrderPayableAmount,
-  verifyPaymentAmount,
 } from "../../../lib/orderAmount"
 import {
-  extractJsonStringField,
   storeLinePayTxId,
 } from "../../../lib/linePayIds"
 import { upsertPartnerOrderToSupabase } from "../../../lib/partnerOrderSync"
+import { resolveOrderAfterLinePayConfirm } from "../../../lib/linePayConfirmResolve"
 import {
   upsertReferralOrderToSupabase,
   buildReferralOrderMetadata,
@@ -21,20 +18,9 @@ import {
   fulfillPaidOrderWithRetry,
   stringifyEsimQrcodes,
 } from "../../../lib/orderFulfillment"
+import { notifyLinePayCareFromOrderNo } from "../../../lib/notifyLinePayPaymentCare"
 
 const LINEPAY_BASE = process.env.LINEPAY_API_BASE || "https://api-pay.line.me"
-
-function signLinePay(
-  channelSecret: string,
-  apiPath: string,
-  body: string,
-  nonce: string
-) {
-  return crypto
-    .createHmac("sha256", channelSecret)
-    .update(channelSecret + apiPath + body + nonce)
-    .digest("base64")
-}
 
 /** 付款已入帳後：背景發貨／開票，不擋 confirm → thank-you */
 function scheduleAfterResponse(task: () => Promise<void>) {
@@ -87,7 +73,15 @@ export async function POST(
     return res.status(400).json({ success: false, message: "缺少 transactionId 或 orderNo" })
   }
 
-  const orderId = `order_${orderNo}`
+  const backendUrl = (process.env.MEDUSA_BACKEND_URL || "http://localhost:9000").replace(
+    /\/$/,
+    ""
+  )
+  const publishableKey =
+    String(req.headers["x-publishable-api-key"] || "").trim() ||
+    process.env.MEDUSA_PUBLISHABLE_API_KEY ||
+    process.env.PUBLISHABLE_API_KEY ||
+    ""
 
   try {
     const query = req.scope.resolve("query") as {
@@ -97,122 +91,41 @@ export async function POST(
       updateOrders: (data: Array<{ id: string; metadata: Record<string, unknown> }>) => Promise<unknown>
     }
 
-    const { data: orders } = await query.graph({
-      entity: "order",
-      fields: [
-        "id",
-        "display_id",
-        "email",
-        "total",
-        "metadata",
-        "payment_status",
-        "items.title",
-        "items.product_title",
-        "items.product_id",
-        "items.variant_sku",
-        "items.quantity",
-        "items.unit_price",
-        "items.subtotal",
-        "items.total",
-        "items.metadata",
-        // 優惠連結分潤需要變體成本／電信商才能在伺服器端重算（見 referralOrderSync）
-        "items.variant.id",
-        "items.variant.sku",
-        "items.variant.metadata",
-        "payment_collections.payment_sessions.id",
-      ],
-      filters: { id: [orderId] },
+    // LINE Pay：新流程先請款再建單；舊未付款單仍相容。藍新 ATM／匯款不走此路徑。
+    const resolved = await resolveOrderAfterLinePayConfirm({
+      scope: req.scope,
+      orderNo,
+      transactionId,
+      channelId,
+      channelSecret,
+      publishableKey,
+      backendUrl,
     })
-    const order = orders?.[0]
-    if (!order) {
-      return res.status(404).json({ success: false, message: "找不到對應訂單" })
-    }
-
-    // 金額一律由 DB 重新計算（絕不信任前端／query 參數，也不做 1 元兜底）
-    const expected =
-      resolveTwdAmount(order.total, sumLineItemsAmount(order.items)) ||
-      (await loadOrderPayableAmount(req.scope, order.id, 0))
-    const reserved = resolveTwdAmount(order.metadata?.linepay_amount)
-    const amountError = verifyPaymentAmount({ expected, reserved })
-    if (amountError) {
-      console.error(`[linepay-confirm] ${amountError}（訂單 ${order.id}），已拒絕請款`)
-      return res.status(409).json({
+    if (!resolved.ok) {
+      scheduleAfterResponse(async () => {
+        try {
+          await notifyLinePayCareFromOrderNo({
+            query,
+            scope: req.scope,
+            orderNo,
+            reason: "linepay_confirm_fail",
+            message: resolved.message || "",
+          })
+        } catch (e: any) {
+          console.warn(
+            "[linepay-confirm] care email:",
+            e?.message || e,
+          )
+        }
+      })
+      return res.status(resolved.status).json({
         success: false,
-        message: `金額核對失敗，已拒絕請款：${amountError}`,
+        message: resolved.message,
+        ...(resolved.detail !== undefined ? { detail: resolved.detail } : {}),
       })
     }
 
-    // 必須用「request 時寫入 LINE 的金額」請款；TWD 不可有小數（LINE 1124 scale）
-    // reserved 缺漏時才退回 expected（舊單備援）
-    const amount = Math.round(Number(reserved > 0 ? reserved : expected))
-    if (!Number.isFinite(amount) || amount < 1 || !Number.isInteger(amount)) {
-      return res.status(409).json({
-        success: false,
-        message: `金額異常，已拒絕請款（amount=${amount}）`,
-      })
-    }
-
-    const confirmPath = `/v4/payments/${encodeURIComponent(transactionId)}/confirm`
-    const confirmBody = JSON.stringify({ amount, currency: "TWD" })
-    const nonce = crypto.randomUUID()
-    const signature = signLinePay(channelSecret, confirmPath, confirmBody, nonce)
-
-    const lineRes = await fetch(`${LINEPAY_BASE}${confirmPath}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-LINE-ChannelId": channelId,
-        "X-LINE-Authorization-Nonce": nonce,
-        "X-LINE-Authorization": signature,
-      },
-      body: confirmBody,
-    })
-    // 用原文抽取 transactionId／orderId，避免 19 位整數被 JSON.parse 成 Number 後精度遺失
-    const lineRaw = await lineRes.text()
-    const lineData = (() => {
-      try {
-        return JSON.parse(lineRaw)
-      } catch {
-        return {}
-      }
-    })() as Record<string, any>
-    if (!lineRes.ok || lineData?.returnCode !== "0000") {
-      console.error("[linepay-confirm] LINE 拒絕請款", {
-        orderId: order.id,
-        orderNo,
-        transactionId,
-        amount,
-        expected,
-        reserved,
-        confirmBody,
-        returnCode: lineData?.returnCode,
-        returnMessage: lineData?.returnMessage,
-      })
-      return res.status(400).json({
-        success: false,
-        message: "LINE Pay confirm 失敗",
-        detail: lineData,
-      })
-    }
-
-    // 防偽核對：以 LINE Pay 回傳的 orderId 綁定訂單（比 metadata 裡的 tx 更可靠；
-    // metadata 曾因 19 位整數精度問題誤判「交易編號不符」）
-    const confirmedOrderId = extractJsonStringField(lineRaw, "orderId") ||
-      String(lineData?.info?.orderId || "").trim()
-    if (confirmedOrderId && confirmedOrderId !== orderNo) {
-      console.error(
-        `[linepay-confirm] LINE Pay orderId 不符: 訂單=${order.id} expected=${orderNo} got=${confirmedOrderId}`
-      )
-      return res.status(409).json({
-        success: false,
-        message: "付款訂單編號與系統訂單不符，已拒絕入帳",
-      })
-    }
-
-    const confirmedTxId =
-      extractJsonStringField(lineRaw, "transactionId") || transactionId
-
-    const alreadyPaid = !!order.metadata?.linepay_pay_time
+    const { order, amount, confirmedTxId, alreadyPaid } = resolved
     if (!alreadyPaid && order.payment_status !== "captured") {
       const sessionId = order.payment_collections?.[0]?.payment_sessions?.[0]?.id
       if (sessionId) {
@@ -432,6 +345,10 @@ export async function POST(
 
         if (needInvoice) {
           try {
+            if (!Number(amount) || Number(amount) < 1) {
+              // 金額算不出來就別送 ezPay（會被擋成 400，客人拿不到發票也查不到原因）
+              throw new Error(`金額無效（amount=${amount}）`)
+            }
             const invoiceRes = await fetch(`${base}/api/internal/issue-invoice`, {
               method: "POST",
               headers,
@@ -440,6 +357,11 @@ export async function POST(
                 orderNo: orderNo.slice(0, 20),
                 email: order.email,
                 amount,
+                buyerName:
+                  (order.metadata?.buyer_name as string) ||
+                  order.shipping_address?.first_name ||
+                  undefined,
+                buyerUBN: (order.metadata?.buyer_ubn as string) || undefined,
                 items: lineItems.map((it: any) => ({
                   name: it.name,
                   qty: it.quantity || 1,
@@ -457,15 +379,23 @@ export async function POST(
                 ezpay_invoice_random: invoiceData.randomNum || "",
                 ezpay_invoice_at:
                   invoiceData.createTime || new Date().toISOString(),
+                ezpay_invoice_error: "",
               })
               console.log(`[linepay-confirm] 背景開票完成: ${order.id}`)
             } else if (!invoiceData?.skipped) {
+              const errMsg = String(
+                invoiceData?.message || invoiceData || `HTTP ${invoiceRes.status}`
+              ).slice(0, 500)
+              await patchMeta({ ezpay_invoice_error: errMsg }).catch(() => {})
               console.error(
                 `[linepay-confirm] 背景開票失敗: ${order.id}`,
-                invoiceData?.message || invoiceData
+                errMsg
               )
             }
           } catch (e: any) {
+            await patchMeta({
+              ezpay_invoice_error: String(e?.message || e).slice(0, 500),
+            }).catch(() => {})
             console.error("[linepay-confirm] 背景 invoice 例外:", e?.message || e)
           }
         }
@@ -481,11 +411,27 @@ export async function POST(
 
     return res.status(200).json({
       success: true,
-      redirectUrl: `${storeUrl}/thank-you?status=success&method=linepay&orderNo=${encodeURIComponent(orderNo)}`,
+      redirectUrl: `${storeUrl}/thank-you?status=success&method=linepay&orderNo=${encodeURIComponent(String(order.id || "").replace(/^order_/, "") || orderNo)}`,
       ...(debugEnabled ? { debug } : {}),
     })
   } catch (error: any) {
     console.error("[linepay-confirm] error:", error?.message || error)
+    scheduleAfterResponse(async () => {
+      try {
+        const query = req.scope.resolve("query") as {
+          graph: (args: Record<string, unknown>) => Promise<{ data: any[] }>
+        }
+        await notifyLinePayCareFromOrderNo({
+          query,
+          scope: req.scope,
+          orderNo,
+          reason: "linepay_confirm_error",
+          message: error?.message || "LINE Pay 付款確認失敗",
+        })
+      } catch {
+        /* ignore */
+      }
+    })
     return res.status(500).json({
       success: false,
       message: error?.message || "LINE Pay 付款確認失敗",

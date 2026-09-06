@@ -8,6 +8,8 @@ import {
   resolveTwdAmount,
   sumLineItemsAmount,
   loadOrderPayableAmount,
+  resolveOrderTotalDiscountSafe,
+  ORDER_TOTALS_FIELDS,
 } from "../lib/orderAmount";
 import {
   upsertReferralOrderToSupabase,
@@ -46,9 +48,10 @@ export default async function simulateReferralPaid({
     fields: [
       "id",
       "email",
-      "total",
       "payment_status",
       "metadata",
+      // items.* 不可省：少了它 total 會變 0（見 lib/orderAmount ORDER_TOTALS_FIELDS）
+      ...ORDER_TOTALS_FIELDS,
       "items.title",
       "items.product_title",
       "items.product_id",
@@ -70,7 +73,7 @@ export default async function simulateReferralPaid({
   if (!order) throw new Error(`找不到訂單 ${orderId}`);
 
   const expected =
-    resolveTwdAmount(order.total, sumLineItemsAmount(order.items)) ||
+    resolveOrderTotalDiscountSafe(order) ||
     (await loadOrderPayableAmount(container, order.id, 0));
 
   const meta: Record<string, unknown> = { ...(order.metadata || {}) };

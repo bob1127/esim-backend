@@ -11,6 +11,8 @@ import {
   sumLineItemsAmount,
   loadOrderPayableAmount,
   verifyPaymentAmount,
+  resolveOrderTotalDiscountSafe,
+  ORDER_TOTALS_FIELDS,
 } from "../../../lib/orderAmount";
 import { upsertPartnerOrderToSupabase } from "../../../lib/partnerOrderSync";
 import {
@@ -19,6 +21,7 @@ import {
 } from "../../../lib/referralOrderSync";
 import { appendAccountingSheet, buildAccountingPayload } from "../../../lib/appendAccountingSheet";
 import { notifyAdminNewOrder } from "../../../lib/appendAdminOrderNotify";
+import { notifyPaymentCare } from "../../../lib/appendPaymentCareNotify";
 import {
   fulfillPaidOrderWithRetry,
   stringifyEsimQrcodes,
@@ -83,9 +86,13 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         "id",
         "display_id",
         "email",
-        "total",
         "payment_status",
         "metadata",
+        // 金額欄位（含 items.*）缺一不可，否則 total／items.total 會全變 0
+        ...ORDER_TOTALS_FIELDS,
+        // 開票買受人姓名需要收件資料（先前漏帶，buyerName 永遠是 undefined）
+        "shipping_address.first_name",
+        "shipping_address.last_name",
         "items.title",
         "items.product_title",
         "items.product_id",
@@ -133,11 +140,50 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       return res.status(200).send("OK");
     }
 
-    /* B) 未達已付款條件（例如信用卡失敗）→ 不處理 */
+    /* B) 未達已付款條件（例如信用卡失敗／逾時）→ 寄關懷信，不 capture */
     if (!isPaidResult(result, outcome.payloadStatus)) {
       console.log(
-        `[newebpay-notify:${rid}] noop: Status=${outcome.payloadStatus} PaymentType=${payType}`,
+        `[newebpay-notify:${rid}] unpaid/fail: Status=${outcome.payloadStatus} PaymentType=${payType}`,
       );
+      const alreadyCared = !!order.metadata?.payment_care_email_sent_at;
+      if (!alreadyCared && order.email) {
+        const careAmount =
+          resolveTwdAmount(result?.Amt) ||
+          resolveTwdAmount(order.metadata?.newebpay_amount) ||
+          resolveOrderTotalDiscountSafe(order);
+        const careMsg = String(
+          result?.Message || result?.RespondMessage || outcome.payloadStatus || "",
+        );
+        scheduleAfterResponse(async () => {
+          await notifyPaymentCare({
+            email: order.email,
+            orderNo: merchantOrderNo,
+            orderId: order.id,
+            amount: careAmount,
+            reason: "newebpay_unpaid",
+            message: careMsg,
+            payloadStatus: outcome.payloadStatus,
+            method: "newebpay",
+          });
+          try {
+            await orderModule.updateOrders([
+              {
+                id: order.id,
+                metadata: {
+                  ...(order.metadata || {}),
+                  payment_care_email_sent_at: new Date().toISOString(),
+                  payment_care_email_reason: careMsg.slice(0, 120),
+                },
+              },
+            ]);
+          } catch (metaErr: any) {
+            console.warn(
+              `[newebpay-notify:${rid}] care meta 寫入失敗:`,
+              metaErr?.message || metaErr,
+            );
+          }
+        });
+      }
       return res.status(200).send("OK");
     }
 
@@ -146,7 +192,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     // 金額核對：藍新回報的 Amt（已驗簽）必須等於 DB 重新計算的訂單金額，
     // 以及建單時記錄的 newebpay_amount。任何不符即中止，不 capture、不發貨。
     const expected =
-      resolveTwdAmount(order.total, sumLineItemsAmount(order.items)) ||
+      resolveOrderTotalDiscountSafe(order) ||
       (await loadOrderPayableAmount(req.scope, order.id, 0));
     const reserved = resolveTwdAmount(order.metadata?.newebpay_amount);
     const paid = resolveTwdAmount(result?.Amt);
@@ -392,61 +438,86 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 
         if (!hasInvoice) {
           try {
+            // Medusa graph 的 order.total 常為 0；必須用已核對過的 expected／藍新 Amt
             const amtRaw =
-              typeof order.total === "number"
-                ? order.total
-                : Number(result?.Amt || 0);
-            const invoiceRes = await fetch(
-              `${fulfillBase.replace(/\/$/, "")}/api/internal/issue-invoice`,
-              {
-                method: "POST",
-                headers: internalHeaders,
-                body: JSON.stringify({
-                  orderId: order.id,
-                  orderNo: merchantOrderNo.slice(0, 20),
-                  email: order.email,
-                  amount: amtRaw,
-                  buyerName:
-                    order.metadata?.buyer_name ||
-                    order.shipping_address?.first_name ||
-                    undefined,
-                  buyerUBN: order.metadata?.buyer_ubn || undefined,
-                  items: lineItems.map((it) => ({
-                    name: it.name,
-                    qty: it.quantity || 1,
-                    price:
-                      it.unit_price != null
-                        ? it.unit_price
-                        : Math.round(amtRaw / Math.max(1, lineItems.length)),
-                  })),
-                }),
-              },
-            );
-            const invoiceData = await invoiceRes.json().catch(() => ({}));
-            if (invoiceRes.ok && invoiceData?.success) {
-              if (!invoiceData.skipped && invoiceData.invoiceNumber) {
-                await patchMeta({
-                  ezpay_invoice_number: invoiceData.invoiceNumber,
-                  ezpay_invoice_random: invoiceData.randomNum || "",
-                  ezpay_invoice_at:
-                    invoiceData.createTime || new Date().toISOString(),
-                });
-                console.log(
-                  `[newebpay-notify:${rid}] 發票開立: ${invoiceData.invoiceNumber}`,
-                );
+              resolveTwdAmount(
+                expected,
+                result?.Amt,
+                order.metadata?.newebpay_amount,
+                order.total,
+                sumLineItemsAmount(order.items),
+              ) || 0;
+            if (amtRaw < 1) {
+              console.error(
+                `[newebpay-notify:${rid}] 發票略過：金額無效`,
+                { expected, orderTotal: order.total, amt: result?.Amt },
+              );
+            } else {
+              const invoiceRes = await fetch(
+                `${fulfillBase.replace(/\/$/, "")}/api/internal/issue-invoice`,
+                {
+                  method: "POST",
+                  headers: internalHeaders,
+                  body: JSON.stringify({
+                    orderId: order.id,
+                    orderNo: merchantOrderNo.slice(0, 20),
+                    email: order.email,
+                    amount: amtRaw,
+                    buyerName:
+                      order.metadata?.buyer_name ||
+                      order.shipping_address?.first_name ||
+                      undefined,
+                    buyerUBN: order.metadata?.buyer_ubn || undefined,
+                    items: lineItems.map((it) => ({
+                      name: it.name,
+                      qty: it.quantity || 1,
+                      price:
+                        it.unit_price != null
+                          ? it.unit_price
+                          : Math.round(amtRaw / Math.max(1, lineItems.length)),
+                    })),
+                  }),
+                },
+              );
+              const invoiceData = await invoiceRes.json().catch(() => ({}));
+              if (invoiceRes.ok && invoiceData?.success) {
+                if (!invoiceData.skipped && invoiceData.invoiceNumber) {
+                  await patchMeta({
+                    ezpay_invoice_number: invoiceData.invoiceNumber,
+                    ezpay_invoice_random: invoiceData.randomNum || "",
+                    ezpay_invoice_at:
+                      invoiceData.createTime || new Date().toISOString(),
+                    ezpay_invoice_error: "",
+                  });
+                  console.log(
+                    `[newebpay-notify:${rid}] 發票開立: ${invoiceData.invoiceNumber}`,
+                  );
+                } else {
+                  console.log(
+                    `[newebpay-notify:${rid}] 發票略過:`,
+                    invoiceData.message || "disabled",
+                  );
+                }
               } else {
-                console.log(
-                  `[newebpay-notify:${rid}] 發票略過:`,
-                  invoiceData.message || "disabled",
+                const errMsg = String(
+                  invoiceData?.message ||
+                    invoiceData ||
+                    `HTTP ${invoiceRes.status}`,
+                ).slice(0, 500);
+                await patchMeta({ ezpay_invoice_error: errMsg }).catch(() => {});
+                console.error(
+                  `[newebpay-notify:${rid}] 發票失敗:`,
+                  errMsg,
                 );
               }
-            } else {
-              console.error(
-                `[newebpay-notify:${rid}] 發票失敗:`,
-                invoiceData?.message || invoiceData,
-              );
             }
           } catch (invErr: any) {
+            await patchMeta({
+              ezpay_invoice_error: String(invErr?.message || invErr).slice(
+                0,
+                500,
+              ),
+            }).catch(() => {});
             console.error(
               `[newebpay-notify:${rid}] 發票例外:`,
               invErr?.message || invErr,

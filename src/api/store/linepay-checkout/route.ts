@@ -1,15 +1,16 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import crypto from "crypto"
+import { Modules } from "@medusajs/framework/utils"
 import {
   resolveTwdAmount,
   sumLineItemsAmount,
-  loadOrderPayableAmount,
 } from "../../../lib/orderAmount"
 import {
   extractJsonStringField,
   storeLinePayTxId,
 } from "../../../lib/linePayIds"
 import { buildMemberIdentityMetadata } from "../../../lib/memberIdentity"
+import { cartIdToLinePayOrderNo } from "../../../lib/linePayOrderNo"
 
 const LINEPAY_BASE = process.env.LINEPAY_API_BASE || "https://api-pay.line.me"
 
@@ -38,198 +39,6 @@ async function storeFetch(
   return { response, data }
 }
 
-async function sleep(ms: number) {
-  await new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-async function recoverOrderAfterComplete(
-  req: MedusaRequest,
-  backendUrl: string,
-  headers: Record<string, string>,
-  cartId: string
-) {
-  let cartEmail: string | undefined
-  for (let i = 0; i < 8; i++) {
-    const cartRes = await storeFetch(backendUrl, `/store/carts/${cartId}`, headers)
-    const cart = cartRes.data?.cart
-    cartEmail = cart?.email || cartEmail
-    if (cart?.completed_at) break
-    await sleep(300 + i * 150)
-  }
-
-  const orderFields = [
-    "id",
-    "email",
-    "total",
-    "subtotal",
-    "item_total",
-    "metadata",
-    "summary.*",
-    "items.quantity",
-    "items.unit_price",
-    "items.subtotal",
-    "items.total",
-    "items.raw_unit_price",
-    "payment_collections.amount",
-  ]
-
-  try {
-    const query = req.scope.resolve("query") as {
-      graph: (args: Record<string, unknown>) => Promise<{ data: any[] }>
-    }
-    const { data: carts } = await query.graph({
-      entity: "cart",
-      fields: [
-        "id",
-        "order.id",
-        "order.email",
-        "order.total",
-        "order.subtotal",
-        "order.item_total",
-        "order.metadata",
-        "order.summary.*",
-        "order.items.quantity",
-        "order.items.unit_price",
-        "order.items.subtotal",
-        "order.items.total",
-        "order.items.raw_unit_price",
-        "order.payment_collections.amount",
-      ],
-      filters: { id: [cartId] },
-    })
-    const linked = carts?.[0]?.order
-    if (linked?.id) return linked
-  } catch {
-    // noop
-  }
-
-  if (cartEmail) {
-    try {
-      const query = req.scope.resolve("query") as {
-        graph: (args: Record<string, unknown>) => Promise<{ data: any[] }>
-      }
-      const { data: orders } = await query.graph({
-        entity: "order",
-        fields: [...orderFields, "created_at"],
-        filters: { email: cartEmail },
-      })
-      const sorted = (orders || []).sort(
-        (a, b) =>
-          new Date(b.created_at || 0).getTime() -
-          new Date(a.created_at || 0).getTime()
-      )
-      if (sorted[0]?.id) return sorted[0]
-    } catch {
-      // noop
-    }
-  }
-
-  return null
-}
-
-async function completeMedusaOrder(
-  req: MedusaRequest,
-  backendUrl: string,
-  headers: Record<string, string>,
-  cartId: string
-): Promise<{ order: any; cartAmount: number }> {
-  // 明確要求 totals／items：complete 後 cart 會變空，金額必須在「尚未完成」時抓到
-  const existingCart = await storeFetch(
-    backendUrl,
-    `/store/carts/${cartId}?fields=+total,+subtotal,+item_total,*items,*items.variant,completed_at,email,*payment_collection`,
-    headers
-  )
-  const cart = existingCart.data?.cart
-  const cartStillOpen = !cart?.completed_at
-  const cartAmount = cartStillOpen
-    ? resolveTwdAmount(
-        cart?.total,
-        cart?.item_total,
-        cart?.subtotal,
-        sumLineItemsAmount(cart?.items)
-      )
-    : 0
-
-  if (cart?.completed_at) {
-    const recovered = await recoverOrderAfterComplete(req, backendUrl, headers, cartId)
-    if (recovered) {
-      const recoveredAmount = await loadOrderPayableAmount(
-        req.scope,
-        recovered.id,
-        resolveTwdAmount(
-          recovered?.total,
-          recovered?.item_total,
-          (recovered as any)?.summary?.total,
-          sumLineItemsAmount((recovered as any)?.items)
-        )
-      )
-      return { order: recovered, cartAmount: recoveredAmount }
-    }
-  }
-
-  const providerId =
-    process.env.MEDUSA_LINEPAY_PAYMENT_PROVIDER_ID ||
-    process.env.MEDUSA_PAYMENT_PROVIDER_ID ||
-    "pp_system_default"
-
-  // 重試結帳時重用既有 payment collection，少一次建立
-  let payColId =
-    cart?.payment_collection?.id ||
-    cart?.payment_collection_id ||
-    null
-
-  if (!payColId) {
-    const payColRes = await storeFetch(backendUrl, "/store/payment-collections", headers, {
-      method: "POST",
-      body: JSON.stringify({ cart_id: cartId }),
-    })
-    payColId = payColRes.data?.payment_collection?.id
-  }
-  if (!payColId) throw new Error("無法建立付款流程（payment collection）")
-
-  await storeFetch(
-    backendUrl,
-    `/store/payment-collections/${payColId}/payment-sessions`,
-    headers,
-    {
-      method: "POST",
-      body: JSON.stringify({ provider_id: providerId }),
-    }
-  )
-
-  const completeRes = await storeFetch(backendUrl, `/store/carts/${cartId}/complete`, headers, {
-    method: "POST",
-    headers: { "Idempotency-Key": `linepay_complete_${cartId}` },
-  })
-
-  if (completeRes.response.ok && completeRes.data?.type === "order") {
-    return { order: completeRes.data.order, cartAmount }
-  }
-
-  if (completeRes.response.status === 409 || completeRes.data?.type === "cart") {
-    const recovered = await recoverOrderAfterComplete(req, backendUrl, headers, cartId)
-    if (recovered) {
-      const recoveredAmount = await loadOrderPayableAmount(
-        req.scope,
-        recovered.id,
-        cartAmount ||
-          resolveTwdAmount(
-            recovered?.total,
-            recovered?.item_total,
-            sumLineItemsAmount((recovered as any)?.items)
-          )
-      )
-      return { order: recovered, cartAmount: recoveredAmount || cartAmount }
-    }
-  }
-
-  throw new Error(completeRes.data?.message || "訂單建立失敗")
-}
-
-function toMerchantOrderNo(orderId: string) {
-  return orderId.replace(/^order_/, "")
-}
-
 function signLinePay(
   channelSecret: string,
   apiPath: string,
@@ -242,6 +51,11 @@ function signLinePay(
     .digest("base64")
 }
 
+/**
+ * LINE Pay request：此時不 complete cart、不建立 Medusa order。
+ * （藍新 ATM／匯款仍走 newebpay-checkout 先建單，與此無關。）
+ * 客人未付款就返回 → 購物車仍在、後台不會多一筆未付款單。
+ */
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
   const { cart_id, orderInfo } = req.body as {
     cart_id?: string
@@ -258,55 +72,98 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     return res.status(503).json({ message: "LINE Pay 金鑰未設定" })
   }
 
-  const backendUrl = (process.env.MEDUSA_BACKEND_URL || "http://localhost:9000").replace(/\/$/, "")
+  const backendUrl = (process.env.MEDUSA_BACKEND_URL || "http://localhost:9000").replace(
+    /\/$/,
+    ""
+  )
   const headers = storeHeaders(pubKey)
 
   try {
-    const { order, cartAmount } = await completeMedusaOrder(
-      req,
+    const cartRes = await storeFetch(
       backendUrl,
-      headers,
-      cart_id
+      `/store/carts/${cart_id}?fields=+total,+subtotal,+item_total,*items,*items.variant,completed_at,email,metadata,*payment_collection`,
+      headers
     )
-    if (!order?.id) {
-      return res.status(500).json({ message: "訂單建立失敗，請稍後再試" })
+    const cart = cartRes.data?.cart
+    if (!cart?.id) {
+      return res.status(404).json({ message: "找不到購物車" })
+    }
+    if (cart.completed_at) {
+      return res.status(400).json({
+        message: "購物車已結帳完成，請重新加入商品後再結帳。",
+        code: "CART_COMPLETED",
+      })
+    }
+    if (!Array.isArray(cart.items) || cart.items.length === 0) {
+      return res.status(400).json({
+        message: "購物車是空的",
+        code: "EMPTY_CART",
+      })
     }
 
-    const merchantOrderNo = toMerchantOrderNo(order.id)
-    let amount = await loadOrderPayableAmount(req.scope, order.id, cartAmount)
-    // complete 剛結束時 summary／items 偶發尚未算完，短等再讀一次
-    if (!amount || amount < 1) {
-      await sleep(400)
-      amount = await loadOrderPayableAmount(req.scope, order.id, cartAmount)
-    }
-    if (!amount || amount < 1) {
-      console.error(
-        `[linepay-checkout] 金額為 0：order=${order.id} cartAmount=${cartAmount}`,
-        {
-          orderTotal: order?.total,
-          itemTotal: order?.item_total,
-          items: (order?.items || []).map((it: any) => ({
-            qty: it?.quantity,
-            unit: it?.unit_price,
-            total: it?.total,
-          })),
-        }
-      )
-      return res.status(400).json({
-        message: `訂單金額異常（${amount || 0}），無法建立 LINE Pay。請重新整理頁面、清空後再加入商品重試。`,
-        orderId: order.id,
-        cartAmount,
-      })
-    }
-    // TWD：LINE Pay 要求整數金額，否則 confirm 會回 1124（scale）
-    amount = Math.round(Number(amount))
+    let amount = resolveTwdAmount(
+      cart.total,
+      cart.item_total,
+      cart.subtotal,
+      sumLineItemsAmount(cart.items)
+    )
+    amount = Math.round(Number(amount) || 0)
     if (!Number.isInteger(amount) || amount < 1) {
       return res.status(400).json({
-        message: `訂單金額非整數（${amount}），無法建立 LINE Pay。`,
-        orderId: order.id,
+        message: `購物車金額異常（${amount || 0}），無法建立 LINE Pay。`,
+        cartAmount: amount,
       })
     }
+
+    const merchantOrderNo = cartIdToLinePayOrderNo(cart_id)
     const storeUrl = resolveStoreUrl()
+
+    const cm = (cart.metadata || {}) as Record<string, unknown>
+    let partnerMeta: Record<string, unknown> = {}
+    if (cm.is_partner_order) {
+      partnerMeta = {
+        is_partner_order: true,
+        partner_store_id: cm.partner_store_id ?? "",
+        partner_id: cm.partner_id ?? "",
+        partner_total: cm.partner_total ?? amount,
+        partner_b2b_cost: cm.partner_b2b_cost ?? 0,
+        partner_profit: cm.partner_profit ?? 0,
+      }
+    } else if (cm.jeko_referral_code) {
+      partnerMeta = {
+        jeko_referral_code: String(cm.jeko_referral_code),
+      }
+    }
+
+    const identityMeta = buildMemberIdentityMetadata(orderInfo, cart.email)
+
+    // 先把核對用欄位寫入 cart.metadata（付款成功後 confirm 再 complete）
+    try {
+      const cartModule = req.scope.resolve(Modules.CART) as {
+        updateCarts: (
+          data: Array<{ id: string; metadata?: Record<string, unknown> }>
+        ) => Promise<unknown>
+      }
+      await cartModule.updateCarts([
+        {
+          id: cart_id,
+          metadata: {
+            ...cm,
+            linepay_order_no: merchantOrderNo,
+            linepay_amount: amount,
+            linepay_status: "requested",
+            linepay_requested_at: new Date().toISOString(),
+            ...identityMeta,
+            ...partnerMeta,
+          },
+        },
+      ])
+    } catch (e: any) {
+      console.warn(
+        "[linepay-checkout] 寫入 cart metadata 失敗（仍繼續向 LINE 建單）:",
+        e?.message || e
+      )
+    }
 
     const requestBody = {
       amount,
@@ -322,7 +179,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       ],
       redirectUrls: {
         confirmUrl: `${storeUrl}/linepay-confirm?orderNo=${encodeURIComponent(merchantOrderNo)}`,
-        cancelUrl: `${storeUrl}/Cart?linepay=cancel`,
+        cancelUrl: `${storeUrl}/api/linepay/cancel?orderNo=${encodeURIComponent(merchantOrderNo)}`,
       },
     }
 
@@ -350,6 +207,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         return {}
       }
     })() as Record<string, any>
+
     if (!lineRes.ok || lineData?.returnCode !== "0000") {
       return res.status(400).json({
         message: "LINE Pay 建立付款失敗",
@@ -358,74 +216,61 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     }
 
     const paymentUrl = lineData?.info?.paymentUrl?.web
-    // 19 位 transactionId 必須從原文抽取，避免 JSON Number 精度遺失
     const transactionId =
       extractJsonStringField(lineRaw, "transactionId") ||
       String(lineData?.info?.transactionId || "")
 
-    // 夥伴店訂單：把 cart.metadata 內「已由簽章驗證過」的分潤歸屬複製到 order
-    let partnerMeta: Record<string, unknown> = {}
-    try {
-      const query = req.scope.resolve("query") as {
-        graph: (args: Record<string, unknown>) => Promise<{ data: any[] }>
-      }
-      const { data: carts } = await query.graph({
-        entity: "cart",
-        fields: ["id", "metadata"],
-        filters: { id: [cart_id] },
+    if (!paymentUrl) {
+      return res.status(400).json({
+        message: "LINE Pay 未回傳付款網址",
+        detail: lineData,
       })
-      const cm = (carts?.[0]?.metadata || {}) as Record<string, unknown>
-      if (cm.is_partner_order) {
-        partnerMeta = {
-          is_partner_order: true,
-          partner_store_id: cm.partner_store_id ?? "",
-          partner_id: cm.partner_id ?? "",
-          partner_total: cm.partner_total ?? amount,
-          partner_b2b_cost: cm.partner_b2b_cost ?? 0,
-          partner_profit: cm.partner_profit ?? 0,
-        }
-      } else if (cm.jeko_referral_code) {
-        partnerMeta = {
-          jeko_referral_code: String(cm.jeko_referral_code),
-        }
-      }
-    } catch {
-      // 讀取失敗不阻斷付款
     }
 
-    // 金額與交易編號必須在導轉前寫入（confirm 交叉核對用）
-    try {
-      const orderModule = req.scope.resolve("order") as {
-        updateOrders: (
-          data: Array<{ id: string; metadata: Record<string, unknown> }>
-        ) => Promise<unknown>
-      }
-      await orderModule.updateOrders([
-        {
-          id: order.id,
-          metadata: {
-            ...(order.metadata || {}),
-            linepay_order_no: merchantOrderNo,
-            linepay_transaction_id: storeLinePayTxId(transactionId),
-            linepay_amount: amount,
-            // 會員身分「蓋章」：讓會員中心可依此對回本人訂單
-            ...buildMemberIdentityMetadata(orderInfo, order.email),
-            ...partnerMeta,
+    // 寫入 transactionId 不阻塞導轉（confirm 會帶 query 上的 transactionId）
+    void (async () => {
+      try {
+        const cartModule = req.scope.resolve(Modules.CART) as {
+          updateCarts: (
+            data: Array<{ id: string; metadata?: Record<string, unknown> }>
+          ) => Promise<unknown>
+        }
+        await cartModule.updateCarts([
+          {
+            id: cart_id,
+            metadata: {
+              ...cm,
+              linepay_order_no: merchantOrderNo,
+              linepay_amount: amount,
+              linepay_transaction_id: storeLinePayTxId(transactionId),
+              linepay_status: "requested",
+              linepay_requested_at:
+                (cm.linepay_requested_at as string) ||
+                new Date().toISOString(),
+              ...identityMeta,
+              ...partnerMeta,
+            },
           },
-        },
-      ])
-    } catch {
-      // metadata 寫失敗不阻斷付款（confirm 會以 LINE Pay orderId + DB 金額核對）
-    }
+        ])
+      } catch (e: any) {
+        console.warn(
+          "[linepay-checkout] 背景寫入 transactionId 失敗:",
+          e?.message || e
+        )
+      }
+    })()
 
     return res.status(200).json({
       success: true,
-      orderId: order.id,
+      // 付款成功前尚無 Medusa order
+      orderId: null,
+      cartId: cart_id,
       orderNo: merchantOrderNo,
       amount,
       transactionId,
       paymentUrl,
       paymentAccessToken: lineData?.info?.paymentAccessToken,
+      deferredOrder: true,
     })
   } catch (error: any) {
     return res.status(500).json({ message: error?.message || "LINE Pay 結帳失敗" })

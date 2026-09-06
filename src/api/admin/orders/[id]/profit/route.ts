@@ -20,12 +20,15 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       entity: "order",
       fields: [
         "id",
+        "currency_code",
+        "metadata",
+        // 含 items.*，否則 total／items.total 會是 0（見 ORDER_TOTALS_FIELDS）
         "total",
         "subtotal",
         "item_total",
-        "currency_code",
-        "metadata",
+        "discount_total",
         "summary.*",
+        "items.*",
         "items.id",
         "items.title",
         "items.product_title",

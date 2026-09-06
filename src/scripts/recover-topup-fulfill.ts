@@ -7,6 +7,7 @@
  *   01M0Z1GFZN0BXA61TJ8RHGT4ZE 202608262054168817938050
  */
 import { ExecArgs } from "@medusajs/framework/types"
+import { ORDER_TOTALS_FIELDS } from "../lib/orderAmount"
 
 function normalizeQrSrc(raw: unknown): string {
   const str = String(raw || "")
@@ -49,13 +50,11 @@ export default async function recoverTopupFulfill({ container, args }: ExecArgs)
     fields: [
       "id",
       "email",
-      "total",
       "metadata",
+      // items.* 不可省：少了它 total 會變 0（見 lib/orderAmount ORDER_TOTALS_FIELDS）
+      ...ORDER_TOTALS_FIELDS,
       "items.title",
       "items.product_title",
-      "items.quantity",
-      "items.unit_price",
-      "items.subtotal",
     ],
     filters: { id: [orderId] },
   })

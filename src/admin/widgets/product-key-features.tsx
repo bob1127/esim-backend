@@ -12,6 +12,7 @@ import {
   Text,
 } from "@medusajs/ui";
 import { PlusMini, Trash } from "@medusajs/icons";
+import { useShowEsimCarrierWidgets } from "../lib/useIsPhysicalProduct";
 
 type CarrierFeatureEntry = {
   bullets: string[];
@@ -453,7 +454,7 @@ function FeatureBulletRow({
   );
 }
 
-const ProductKeyFeaturesWidget = ({
+const ProductKeyFeaturesWidgetInner = ({
   data,
 }: DetailWidgetProps<Record<string, any>>) => {
   const variantCarriers = useMemo(
@@ -762,6 +763,14 @@ const ProductKeyFeaturesWidget = ({
       </div>
     </Container>
   );
+};
+
+const ProductKeyFeaturesWidget = (
+  props: DetailWidgetProps<Record<string, any>>,
+) => {
+  const show = useShowEsimCarrierWidgets(props.data);
+  if (!show) return null;
+  return <ProductKeyFeaturesWidgetInner {...props} />;
 };
 
 export const config = defineWidgetConfig({

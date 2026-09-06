@@ -10,6 +10,7 @@ import {
   Label,
   Text,
 } from "@medusajs/ui";
+import { useShowEsimCarrierWidgets } from "../lib/useIsPhysicalProduct";
 
 const METADATA_KEY = "hot_sale_telecoms";
 
@@ -66,7 +67,7 @@ const parseHotSaleTelecoms = (
   return [];
 };
 
-const ProductTelecomHotSaleWidget = ({
+const ProductTelecomHotSaleWidgetInner = ({
   data,
 }: DetailWidgetProps<Record<string, any>>) => {
   const carriers = useMemo(() => extractTelecomCarriers(data), [data]);
@@ -187,6 +188,14 @@ const ProductTelecomHotSaleWidget = ({
       </div>
     </Container>
   );
+};
+
+const ProductTelecomHotSaleWidget = (
+  props: DetailWidgetProps<Record<string, any>>,
+) => {
+  const show = useShowEsimCarrierWidgets(props.data);
+  if (!show) return null;
+  return <ProductTelecomHotSaleWidgetInner {...props} />;
 };
 
 export const config = defineWidgetConfig({

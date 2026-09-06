@@ -11,6 +11,7 @@
  *   FULFILLMENT_INTERNAL_URL=https://www.jeko-esim.com.tw
  */
 import { ExecArgs } from "@medusajs/framework/types"
+import { ORDER_TOTALS_FIELDS } from "../lib/orderAmount"
 
 function normalizeQrSrc(raw: unknown): string {
   const str = String(raw || "")
@@ -54,8 +55,9 @@ export default async function retryFulfillOrder({ container, args }: ExecArgs) {
     fields: [
       "id",
       "email",
-      "total",
       "metadata",
+      // items.* 不可省：少了它 total 會變 0（見 lib/orderAmount ORDER_TOTALS_FIELDS）
+      ...ORDER_TOTALS_FIELDS,
       "items.title",
       "items.product_title",
       "items.variant_sku",

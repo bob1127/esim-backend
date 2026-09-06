@@ -12,6 +12,7 @@ import {
   Text,
 } from "@medusajs/ui";
 import { PlusMini, Trash } from "@medusajs/icons";
+import { useShowEsimCarrierWidgets } from "../lib/useIsPhysicalProduct";
 
 type OverviewNotice = {
   fup_notice: string;
@@ -323,7 +324,7 @@ const sanitizeForSave = (map: OverviewNoticesMap): OverviewNoticesMap => {
   return out;
 };
 
-const ProductOverviewNoticesWidget = ({
+const ProductOverviewNoticesWidgetInner = ({
   data,
 }: DetailWidgetProps<Record<string, any>>) => {
   const variantCarriers = useMemo(
@@ -568,6 +569,14 @@ const ProductOverviewNoticesWidget = ({
       </div>
     </Container>
   );
+};
+
+const ProductOverviewNoticesWidget = (
+  props: DetailWidgetProps<Record<string, any>>,
+) => {
+  const show = useShowEsimCarrierWidgets(props.data);
+  if (!show) return null;
+  return <ProductOverviewNoticesWidgetInner {...props} />;
 };
 
 export const config = defineWidgetConfig({

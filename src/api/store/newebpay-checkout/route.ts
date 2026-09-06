@@ -5,8 +5,9 @@ import {
 } from "../../../lib/newebpay/crypto";
 import {
   resolveTwdAmount,
-  sumLineItemsAmount,
   loadOrderPayableAmount,
+  resolveOrderTotalDiscountSafe,
+  ORDER_TOTALS_FIELDS,
 } from "../../../lib/orderAmount";
 import { buildMemberIdentityMetadata } from "../../../lib/memberIdentity";
 
@@ -92,7 +93,16 @@ async function recoverOrderAfterComplete(
     };
     const { data: carts } = await query.graph({
       entity: "cart",
-      fields: ["id", "email", "completed_at", "order.id", "order.email", "order.total", "order.metadata"],
+      // 含 order.items.*，否則 order.total 會是 0（見 ORDER_TOTALS_FIELDS）
+      fields: [
+        "id",
+        "email",
+        "completed_at",
+        "order.id",
+        "order.email",
+        "order.metadata",
+        ...ORDER_TOTALS_FIELDS.map((f) => `order.${f}`),
+      ],
       filters: { id: [cartId] },
     });
     const linked = carts?.[0]?.order;
@@ -109,7 +119,8 @@ async function recoverOrderAfterComplete(
       };
       const { data: orders } = await query.graph({
         entity: "order",
-        fields: ["id", "email", "total", "metadata", "created_at"],
+        // 含 items.*，否則 total 會是 0（見 ORDER_TOTALS_FIELDS）
+        fields: ["id", "email", "metadata", "created_at", ...ORDER_TOTALS_FIELDS],
         filters: { email: cartEmail },
       });
       const sorted = (orders || []).sort(
@@ -296,7 +307,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     const merchantOrderNo = toMerchantOrderNo(order.id);
     // 金額一律由 DB 重新計算，禁止 1 元兜底；orderInfo.totalPrice（前端值）僅供比對記錄，不採用
     const amount =
-      resolveTwdAmount(order.total, sumLineItemsAmount((order as any).items)) ||
+      resolveOrderTotalDiscountSafe(order) ||
       (await loadOrderPayableAmount(req.scope, order.id, 0));
     if (!amount || amount < 1) {
       return res.status(400).json({

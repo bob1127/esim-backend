@@ -11,6 +11,7 @@ import {
   ProgressAccordion,
   Text,
 } from "@medusajs/ui";
+import { useShowEsimCarrierWidgets } from "../lib/useIsPhysicalProduct";
 
 const METADATA_KEY = "carrier_specs_by_carrier";
 
@@ -154,7 +155,7 @@ const sanitizeForSave = (map: CarrierSpecsMap): Record<string, unknown> => {
   return out;
 };
 
-const ProductCarrierSpecsWidget = ({
+const ProductCarrierSpecsWidgetInner = ({
   data,
 }: DetailWidgetProps<Record<string, any>>) => {
   const variantCarriers = useMemo(() => extractTelecomCarriers(data), [data]);
@@ -377,6 +378,14 @@ const ProductCarrierSpecsWidget = ({
       </div>
     </Container>
   );
+};
+
+const ProductCarrierSpecsWidget = (
+  props: DetailWidgetProps<Record<string, any>>,
+) => {
+  const show = useShowEsimCarrierWidgets(props.data);
+  if (!show) return null;
+  return <ProductCarrierSpecsWidgetInner {...props} />;
 };
 
 export const config = defineWidgetConfig({
